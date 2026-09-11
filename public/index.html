@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Live NUS shuttle bus readings, observed crowd patterns, and fleet locations. All times in Singapore time.">
+  <title>NUS ISB Live Crowd Tracker</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand">
+        <div class="brand-logo"><span class="logo-nus">NUS</span><span class="logo-shuttle">ISB</span></div>
+        <div class="brand-text"><h1>Internal Shuttle Bus Crowd Tracker</h1><p class="subtitle">Live telemetry & observed crowd patterns · Singapore time (SGT)</p></div>
+      </div>
+      <div class="header-actions">
+        <div class="poller-pill is-idle" id="pollerPill"><span class="pulse-dot" aria-hidden="true"></span><span id="pollerCountdown">Connecting…</span></div>
+        <button class="btn btn-primary" id="btnPollNow" type="button" disabled>Poll Now</button>
+        <a href="/api/export" class="btn btn-secondary" download>Export CSV</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-layout">
+    <div class="connection-banner is-info" id="connectionBanner" role="status">
+      <p id="connectionMessage">Connecting to the telemetry service…</p>
+      <button class="btn btn-sm btn-secondary" type="button" id="btnRefreshData">Refresh</button>
+    </div>
+    <div class="source-attribution"><span>Source: <a id="sourceLink" href="https://univus.nus.edu.sg/" target="_blank" rel="noopener noreferrer">Checking current provider…</a></span><p id="coverageSummary">Counts cover observed vehicles. Coverage depends on the current source.</p><p id="providerWarning" class="provider-warning" hidden></p></div>
+    <p class="action-message" id="actionMessage" role="status" aria-live="polite" hidden></p>
+    <noscript><p class="connection-banner is-warning">Enable JavaScript to load live readings and dashboard controls.</p></noscript>
+
+    <section class="summary-cards-grid" aria-label="Latest observations">
+      <div class="metric-card"><div class="metric-header"><span class="metric-title">Latest / Observed Vehicles</span><span class="metric-icon" aria-hidden="true">🚌</span></div><div class="metric-value" id="statActiveBuses">Unknown</div><div class="metric-subtext" id="statActiveBusesSubtext">Waiting for a successful live pull</div></div>
+      <div class="metric-card"><div class="metric-header"><span class="metric-title">Observed Crowd Level</span><span class="metric-icon" aria-hidden="true">👥</span></div><div class="metric-value-row"><span class="metric-value" id="statCampusCrowd">Unknown</span><span class="badge badge-secondary" id="statCampusBadge">No readings</span></div><div class="metric-subtext" id="statCampusAvgOccupancy">Occupancy has not been reported</div></div>
+      <div class="metric-card"><div class="metric-header"><span class="metric-title">Most Crowded Observed Service</span><span class="metric-icon" aria-hidden="true">📊</span></div><div class="metric-value" id="statBusiestRoute">Unknown</div><div class="metric-subtext" id="statBusiestRouteDetails">No route occupancy readings available</div></div>
+      <div class="metric-card highlight"><div class="metric-header"><span class="metric-title">Quietest Observed Hour</span><span class="metric-icon" aria-hidden="true">🕒</span></div><div class="metric-value" id="statBestWindow">Unknown</div><div class="metric-subtext" id="statBestWindowDetails">Collect live history to compare hours</div></div>
+    </section>
+
+    <nav class="tab-nav" aria-label="Dashboard views" role="tablist">
+      <button class="tab-btn active" id="tabButtonHistory" role="tab" aria-controls="tab-24h" aria-selected="true" data-tab="tab-24h">24-Hour Crowd Analytics</button>
+      <button class="tab-btn" id="tabButtonMap" role="tab" aria-controls="tab-map" aria-selected="false" data-tab="tab-map">Live Campus Map</button>
+      <button class="tab-btn" id="tabButtonPatterns" role="tab" aria-controls="tab-optimizer" aria-selected="false" data-tab="tab-optimizer">Observed Travel Patterns</button>
+      <button class="tab-btn" id="tabButtonFleet" role="tab" aria-controls="tab-fleet" aria-selected="false" data-tab="tab-fleet">Bus Fleet Monitor</button>
+      <button class="tab-btn" id="tabButtonSettings" role="tab" aria-controls="tab-settings" aria-selected="false" data-tab="tab-settings">Data & API Settings</button>
+    </nav>
+
+    <section class="tab-content active" id="tab-24h" role="tabpanel" aria-labelledby="tabButtonHistory">
+      <div class="panel">
+        <div class="panel-header-controls">
+          <div><h2 class="panel-title" id="panelTimelineTitle">Rolling 24-Hour Shuttle Readings</h2><p class="panel-subtitle" id="panelTimelineSubtitle">10-minute intervals · All times SGT</p></div>
+          <div class="chart-top-controls">
+            <div class="control-group"><span class="control-label">Time window:</span><div class="toggle-group" id="timeModeToggleGroup"><button class="toggle-btn active" data-timemode="rolling" aria-pressed="true">Rolling 24 Hours</button><button class="toggle-btn" data-timemode="date" aria-pressed="false">Specific Date</button></div></div>
+            <div class="date-picker-group" id="datePickerGroup" hidden>
+              <label class="control-label" for="selectQuickDate">Recorded dates:</label><select id="selectQuickDate" class="date-input"><option value="">No recorded dates</option></select>
+              <input type="date" id="inputSpecificDate" class="date-input" aria-label="Calendar date in Singapore time">
+              <button type="button" class="btn btn-sm btn-secondary" id="btnDateToday">Today</button><button type="button" class="btn btn-sm btn-secondary" id="btnDateYesterday">Yesterday</button>
+            </div>
+            <div class="control-group"><span class="control-label">Metric:</span><div class="toggle-group" id="viewToggleGroup"><button class="toggle-btn active" data-view="exact" aria-pressed="true">Average Passengers</button><button class="toggle-btn" data-view="crowd" aria-pressed="false">Crowd Level</button><button class="toggle-btn" data-view="occupancy" aria-pressed="false">Occupancy (%)</button></div></div>
+          </div>
+        </div>
+        <div class="routes-filter-bar"><span class="filter-label">Display routes:</span><div class="filter-pills" id="routeFilterPills"></div></div>
+        <div class="chart-wrapper"><canvas id="timelineChart" width="1100" height="420" role="img" aria-label="Shuttle readings over 24 hours" aria-describedby="chartDescription">Live history chart requires canvas support.</canvas><div id="chartTooltip" class="chart-tooltip"></div></div>
+        <p class="form-hint" id="chartDescription">Missing readings remain unknown.</p>
+        <div class="chart-footer-legend"><div class="legend-zones"><span class="zone-badge zone-low">Low: &lt;35%</span><span class="zone-badge zone-medium">Medium: 35–&lt;75%</span><span class="zone-badge zone-high">High: ≥75%</span></div><div class="legend-note">Gaps mean no reported value. Hover over a 10-minute interval to inspect readings.</div></div>
+      </div>
+    </section>
+
+    <section class="tab-content" id="tab-map" role="tabpanel" aria-labelledby="tabButtonMap">
+      <div class="panel">
+        <div class="panel-header-controls"><div><h2 class="panel-title">NUS Kent Ridge Shuttle Map</h2><p class="panel-subtitle">Latest reported GPS locations and occupancy</p></div><div class="map-quick-stats"><span class="badge badge-info" id="mapActiveBusesBadge">No readings</span><button class="btn btn-sm btn-secondary" id="btnCenterCampus">Center Campus</button></div></div>
+        <div class="map-filter-bar">
+          <div class="map-filter-group"><span class="map-filter-label">Route:</span><div class="map-route-pills" id="mapRouteFilterPills"></div></div>
+          <div class="map-filter-group"><label class="map-filter-label" for="selectBusVehicle">Vehicle:</label><select id="selectBusVehicle" class="form-select form-select-sm"><option value="all">All vehicles</option></select></div>
+          <div class="map-filter-group"><label class="map-filter-label" for="selectMapCrowd">Occupancy:</label><select id="selectMapCrowd" class="form-select form-select-sm"><option value="all">All crowd levels</option><option value="low">Low (&lt;35%)</option><option value="medium">Medium (35–&lt;75%)</option><option value="high">High (≥75%)</option><option value="unknown">Unknown</option></select></div>
+          <div class="map-filter-group checkbox-group"><label class="checkbox-label"><input type="checkbox" id="checkShowStops" checked> Show reference stops</label></div>
+        </div>
+        <p class="data-note" id="mapDataMessage" role="status">Locations update only when the live feed is collected.</p>
+        <div class="map-viewport-container"><div id="leafletMap" class="leaflet-map-frame" aria-label="Campus map"></div><div class="map-floating-legend"><div class="legend-title">Reported occupancy</div><div class="legend-row"><span class="legend-dot green"></span><span>Low &lt;35%</span></div><div class="legend-row"><span class="legend-dot yellow"></span><span>Medium 35–&lt;75%</span></div><div class="legend-row"><span class="legend-dot red"></span><span>High ≥75%</span></div><div class="legend-row"><span class="legend-dot unknown"></span><span>Unknown</span></div></div></div>
+      </div>
+    </section>
+
+    <section class="tab-content" id="tab-optimizer" role="tabpanel" aria-labelledby="tabButtonPatterns">
+      <p class="data-note">Patterns summarize collected live readings by Singapore hour. Coverage varies by route, day, source, and monitored stops; these observations do not predict the next bus or guarantee a seat.</p>
+      <div class="optimizer-grid">
+        <div class="panel"><h2 class="panel-title">Quietest Observed Hours</h2><p class="panel-subtitle">Lowest average reported occupancy · SGT</p><div class="windows-list" id="bestWindowsList"></div></div>
+        <div class="panel"><h2 class="panel-title">Busiest Observed Hours</h2><p class="panel-subtitle">Highest average reported occupancy · SGT</p><div class="windows-list" id="busiestHoursList"></div></div>
+      </div>
+      <div class="panel"><h2 class="panel-title">Route Observations</h2><p class="panel-subtitle">Average occupancy and passenger counts from retained live history</p><div class="route-comparison-cards" id="routeSummaryCards"></div></div>
+      <div class="panel"><h2 class="panel-title">Observed Hourly Occupancy</h2><p class="panel-subtitle">Reported occupancy by hour (SGT) · A dot means no reading</p><div class="chart-wrapper hourly-chart"><canvas id="hourlyBarChart" width="1100" height="260" role="img" aria-label="Average reported occupancy by Singapore hour">Hourly occupancy chart requires canvas support.</canvas></div></div>
+    </section>
+
+    <section class="tab-content" id="tab-fleet" role="tabpanel" aria-labelledby="tabButtonFleet">
+      <div class="panel">
+        <div class="panel-header-controls"><div><h2 class="panel-title">Observed Shuttle Fleet</h2><p class="panel-subtitle">Vehicles discovered in live telemetry, with their last reported readings</p></div><div class="fleet-search-group"><label for="fleetSearch">Find a vehicle or route</label><input type="search" id="fleetSearch" class="form-input" placeholder="Search plate or service…" autocomplete="off"></div></div>
+        <div class="fleet-filter-bar"><div class="filter-pills" id="fleetStatusGroup"><button class="btn btn-sm btn-secondary active" data-fleet-status="all" aria-pressed="true" id="filterStatusAll">All</button><button class="btn btn-sm btn-secondary" data-fleet-status="active" aria-pressed="false" id="filterStatusActive">Latest pull</button><button class="btn btn-sm btn-secondary" data-fleet-status="inactive" aria-pressed="false" id="filterStatusInactive">Not in latest pull</button><button class="btn btn-sm btn-secondary" data-fleet-status="stale" aria-pressed="false" id="filterStatusStale">Stale</button></div><div class="filter-pills" id="fleetRouteGroup"></div></div>
+        <div class="fleet-summary-strip"><span>Known vehicles: <strong id="fleetTotalCount">Unknown</strong></span><span>Latest pull: <strong id="fleetActiveCount">Unknown</strong></span><span>Not in latest pull: <strong id="fleetInactiveCount">Unknown</strong></span><span>Stale: <strong id="fleetStaleCount">Unknown</strong></span></div>
+        <p class="data-note">Absence from the latest pull does not establish whether a vehicle is in service. Retained readings are labeled with their observation time.</p>
+        <p class="form-hint" id="fleetResultCount" role="status"></p><div class="fleet-grid" id="fleetGrid"></div>
+      </div>
+    </section>
+
+    <section class="tab-content" id="tab-settings" role="tabpanel" aria-labelledby="tabButtonSettings">
+      <div class="settings-grid">
+        <div class="panel">
+          <h2 class="panel-title">Live Feed Diagnostics</h2><p class="panel-subtitle">Collection health and retained history</p>
+          <table class="diagnostics-table"><tbody>
+            <tr><td>Connection:</td><td id="diagStatus">Connecting</td></tr>
+            <tr><td>Data source:</td><td id="diagSource">Checking current provider…</td></tr>
+            <tr><td>Coverage:</td><td id="diagCoverage">Observed vehicles</td></tr>
+            <tr><td>Feed access:</td><td id="diagToken">Automatic guest access · Daily renewal</td></tr>
+            <tr><td id="diagSessionTimingLabel">Guest session:</td><td id="diagTokenExpiry">Waiting for session</td></tr>
+            <tr><td>Collected readings:</td><td id="diagTotalRecords">Unknown</td></tr>
+            <tr><td>Last successful pull:</td><td id="diagLastPolled">Never</td></tr>
+            <tr><td>Last attempt:</td><td id="diagLastAttempt">Never</td></tr>
+            <tr><td>Latest error:</td><td id="diagLastError">None</td></tr>
+            <tr><td>History storage:</td><td id="diagStorage">Unknown</td></tr>
+          </tbody></table>
+          <div class="settings-actions"><button class="btn btn-primary" id="btnSettingsPollNow" disabled>Collect Snapshot Now</button></div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-title">Live Feed Access</h2><p class="panel-subtitle" id="feedConfigurationText">Automatic guest access renews daily. The current source and its coverage are shown above.</p>
+          <div class="form-group admin-token-group" id="adminTokenGroup" hidden><label for="inputAdminToken">Dashboard admin token:</label><input type="password" id="inputAdminToken" class="form-input" autocomplete="off" spellcheck="false"><small class="form-hint">Required for changes and manual collection on this server. Kept only in this page until you close or reload it.</small></div>
+          <details class="advanced-settings">
+            <summary>Advanced: manual token override</summary>
+            <form id="settingsForm">
+              <div class="form-group"><label for="inputToken">Optional ConnectX FMS token (nextbus_token2):</label><input type="password" id="inputToken" class="form-input" placeholder="Paste an authorized token for direct ConnectX access" autocomplete="off" spellcheck="false"><small class="form-hint" id="tokenHint">Automatic guest access is used by default. Add a token only to override it. Removing an override restores automatic guest access.</small></div>
+              <div class="settings-actions"><button type="submit" class="btn btn-primary" id="btnSaveSettings">Save Manual Override</button><button type="button" class="btn btn-secondary" id="btnRemoveToken" disabled>Use Automatic Access</button></div>
+            </form>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer"><div class="footer-container"><div>NUS Internal Shuttle Bus Crowd Tracker</div><div class="footer-links"><span>All times: Singapore (UTC+8)</span><span aria-hidden="true">·</span><a href="/api/status" target="_blank" rel="noopener noreferrer">API Health</a></div></div></footer>
+</body>
+</html>
