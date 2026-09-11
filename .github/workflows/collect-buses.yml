@@ -31,4 +31,9 @@ jobs:
           TRACKER_URL: ${{ vars.TRACKER_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-        run: node scripts/poll_scheduled.js
+        run: |
+          if [ -z "${TRACKER_URL}" ] || [ -z "${CRON_SECRET}" ]; then
+            echo "Skipping collection because TRACKER_URL or CRON_SECRET is not configured."
+            exit 0
+          fi
+          node scripts/poll_scheduled.js
