@@ -200,7 +200,7 @@ function renderStatus() {
   setText('diagLastPolled', `${formatTime(status.lastPolledAt, true)}${status.lastPolledAt ? ' SGT' : ''}`);
   setText('diagLastAttempt', `${formatTime(status.lastAttemptAt, true)}${status.lastAttemptAt ? ' SGT' : ''}`);
   setText('diagLastError', status.lastError || 'None');
-  setText('diagStorage', status.storage === 'persistent' ? 'Persistent history' : status.storage === 'ephemeral' ? 'Temporary history — may reset between deployments' : status.storage === 'memory' ? 'Memory only — clears on restart' : 'Unknown');
+  setText('diagStorage', status.storage === 'turso' ? 'Persistent shared history' : status.storage === 'persistent' ? 'Persistent history' : status.storage === 'ephemeral' ? 'Temporary history — may reset on any new instance' : status.storage === 'memory' ? 'Memory only — clears on restart' : 'Unknown');
   setText('diagToken', guest ? 'Automatic guest access · Daily renewal' : status.authMode === 'public' ? 'Public arrivals · No token required' : status.tokenSource === 'environment' ? 'Manual override managed by the server' : 'Stored manual override');
   const sessionRenewal = guest && (feed.isUnivus || status.sessionRenewAt);
   setText('diagSessionTimingLabel', sessionRenewal ? 'Guest session:' : 'Guest session expiry:');
@@ -220,7 +220,7 @@ function renderStatus() {
 
 function renderCountdown() {
   if (STATE.polling || STATE.status.isPolling) return setText('pollerCountdown', 'Collecting live readings');
-  if (STATE.status.storage === 'ephemeral') return setText('pollerCountdown', 'On-demand collection');
+  if (STATE.status.collectionMode === 'on-demand' || STATE.status.storage === 'ephemeral') return setText('pollerCountdown', 'On-demand / external schedule');
   if (!STATE.nextPollAt) return setText('pollerCountdown', 'Awaiting next pull');
   const seconds = Math.max(0, Math.ceil((STATE.nextPollAt - Date.now()) / 1000));
   setText('pollerCountdown', seconds ? `Next pull: ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : 'Next pull due');

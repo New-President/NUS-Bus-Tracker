@@ -17,7 +17,9 @@ export class BusCollector {
     this.env = env;
     this.tokenProvider = tokenProvider || new GuestTokenProvider({ now, env });
     this.univusClient = univusClient || new UnivusClient({ now });
-    this.currentSource = getProviderConfig(env, Boolean(this.getToken()));
+    // Resolve stored credentials only within a request or collection, since
+    // shared databases may need asynchronous network access.
+    this.currentSource = null;
     this.intervalMs = 10 * 60 * 1000;
     this.timer = null;
     this.running = false;
@@ -25,7 +27,7 @@ export class BusCollector {
   }
 
   get isPolling() { return this.pendingPoll !== null; }
-  getToken() { return this.env.FMS_TOKEN?.trim() || this.db.getSetting('fms_token') || ''; }
+  async getToken() { return this.env.FMS_TOKEN?.trim() || await this.db.getSetting('fms_token') || ''; }
 
   start() {
     if (this.running) return;
@@ -34,9 +36,10 @@ export class BusCollector {
       if (!this.running) return;
       let remaining = this.intervalMs;
       try {
-        const lastAttempt = Number(this.db.getSetting('last_attempt_at') || 0);
+        const lastAttempt = Number(await this.db.getSetting('last_attempt_at') || 0);
+        if (!this.running) return;
         if (this.now() - lastAttempt >= this.intervalMs) await this.pollNow();
-        remaining = this.intervalMs - (this.now() - Number(this.db.getSetting('last_attempt_at') || 0));
+        remaining = this.intervalMs - (this.now() - Number(await this.db.getSetting('last_attempt_at') || 0));
       } catch {
         console.error('[Collector] Unable to access collection state; retrying at the next interval.');
       }
@@ -59,10 +62,12 @@ export class BusCollector {
 
   async collect() {
     const timestamp = this.now();
-    let token = this.getToken();
-    let source = getProviderConfig(this.env, Boolean(token));
+    let token = '';
+    let source = this.currentSource;
     try {
-      this.db.setSetting('last_attempt_at', timestamp);
+      token = await this.getToken();
+      source = getProviderConfig(this.env, Boolean(token));
+      await this.db.setSetting('last_attempt_at', timestamp);
       let records;
       if (source.dataProvider === 'univus') {
         try { records = await this.univusClient.fetchBuses(); }
@@ -85,39 +90,42 @@ export class BusCollector {
       if (source.dataProvider === 'community') {
         records = await this.fetchPublic({ now: this.now, stops: source.monitoredStops });
       }
-      this.db.recordPoll(records, timestamp, source);
-      this.db.deleteSetting('last_error');
+      await this.db.recordPoll(records, timestamp, source);
+      await this.db.deleteSetting('last_error');
       return { success: true, source: 'live', ...source, recordsCount: records.length, polledCount: records.length, timestamp };
     } catch (error) {
-      let message = error instanceof ProviderError ? error.message : 'Live collection failed. Check provider connectivity.';
+      let message = error instanceof ProviderError ? error.message : 'Live collection failed. Check provider connectivity and database availability.';
       if (token) message = message.split(token).join('[redacted]').split(encodeURIComponent(token)).join('[redacted]');
-      try { this.db.setSetting('last_error', message); } catch { /* Storage may be unavailable. */ }
+      try { await this.db.setSetting('last_error', message); } catch { /* Storage may be unavailable. */ }
       return { success: false, source: 'live', ...source, statusCode: 502, error: message, timestamp };
     } finally { this.currentSource = source; }
   }
 
-  getStatus() {
+  async getStatus() {
     const now = this.now();
-    const lastPolledAt = Number(this.db.getSetting('last_polled_at') || 0);
-    const lastAttemptAt = Number(this.db.getSetting('last_attempt_at') || 0);
-    const configured = getProviderConfig(this.env, Boolean(this.getToken()));
-    const latest = this.db.getLatestPoll(now);
+    const [token, lastPolled, lastAttempt, latest, lastError, totalSnapshots] = await Promise.all([
+      this.getToken(), this.db.getSetting('last_polled_at'), this.db.getSetting('last_attempt_at'),
+      this.db.getLatestPoll(now), this.db.getSetting('last_error'), this.db.getTotalSnapshotsCount()
+    ]);
+    const lastPolledAt = Number(lastPolled || 0);
+    const lastAttemptAt = Number(lastAttempt || 0);
+    const configured = getProviderConfig(this.env, Boolean(token));
     // Attribute stored observations independently of the next provider request.
     const observed = latest ? getProviderConfig({
       ...this.env, BUS_PROVIDER: latest.source_provider,
       BUS_STOPS: JSON.parse(latest.monitored_stops).join(',')
-    }, Boolean(this.getToken())) : this.currentSource;
+    }, Boolean(token)) : this.currentSource || configured;
     const source = { ...observed, authMode: configured.authMode,
-      providerWarning: configured.authMode === 'guest' ? this.currentSource.providerWarning : null };
+      providerWarning: configured.authMode === 'guest' ? this.currentSource?.providerWarning || null : null };
     const manual = configured.authMode === 'manual';
     const univus = configured.dataProvider === 'univus';
     const publicOnly = configured.authMode === 'public';
     const guestStatus = univus ? this.univusClient.getStatus() : this.tokenProvider.getStatus();
     const hasToken = !publicOnly && (manual || (univus ? Boolean(guestStatus.hasSession) :
       Boolean(guestStatus.tokenExpiresAt && Date.parse(guestStatus.tokenExpiresAt) > now)));
-    const lastError = this.db.getSetting('last_error');
     return {
-      active: this.running, source: 'live', ...source, configuredProvider: configured.dataProvider,
+      active: this.running, collectionMode: this.running ? 'scheduled' : 'on-demand',
+      source: 'live', ...source, configuredProvider: configured.dataProvider,
       hasToken, requiresToken: false, canPoll: true,
       tokenSource: publicOnly ? 'none' : manual ? (this.env.FMS_TOKEN?.trim() ? 'environment' : 'stored') : 'guest',
       tokenExpiresAt: manual || publicOnly ? null : guestStatus.tokenExpiresAt,
@@ -126,8 +134,8 @@ export class BusCollector {
       lastError, isPolling: this.isPolling, isStale: !lastPolledAt || now - lastPolledAt > 15 * 60 * 1000,
       pollingIntervalSec: this.intervalMs / 1000, lastPolledAt, lastAttemptAt,
       lastPolledIso: lastPolledAt ? new Date(lastPolledAt).toISOString() : null,
-      nextPollInSec: Math.max(0, Math.ceil((this.intervalMs - (now - lastAttemptAt)) / 1000)),
-      totalSnapshots: this.db.getTotalSnapshotsCount()
+      nextPollInSec: this.running ? Math.max(0, Math.ceil((this.intervalMs - (now - lastAttemptAt)) / 1000)) : null,
+      totalSnapshots
     };
   }
 }

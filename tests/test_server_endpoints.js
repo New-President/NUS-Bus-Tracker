@@ -373,3 +373,17 @@ test('CSV export validates the requested row limit', async t => {
   }
   assert.equal((await request('/api/export?limit=1')).status, 200);
 });
+
+test('hosted CSV exports reject oversized responses with a usable retry hint', async t => {
+  const { request, db } = await fixture(t, { VERCEL: '1' });
+  db.getExportRows = async limit => limit > 1
+    ? [{ vehplate: 'x'.repeat(4_000_000) }]
+    : [{ vehplate: 'TEST-SMALL-EXPORT' }];
+  const oversized = await request('/api/export');
+  assert.equal(oversized.status, 413);
+  assert.match(oversized.headers['content-type'], /application\/json/);
+  assert.match(oversized.json.error, /smaller limit/);
+  const smaller = await request('/api/export?limit=1');
+  assert.equal(smaller.status, 200);
+  assert.match(smaller.data, /TEST-SMALL-EXPORT/);
+});

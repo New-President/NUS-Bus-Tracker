@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import test from 'node:test';
 import './no_provider_network.js';
 
@@ -166,7 +166,7 @@ test('guest authentication failure reports an error and writes no observations',
   assert.equal(result.statusCode, 502);
   assert.equal(calls, 0);
   assert.equal(db.getTotalSnapshotsCount(), 0);
-  assert.equal(collector.getStatus().lastPolledAt, 0);
+  assert.equal((await collector.getStatus()).lastPolledAt, 0);
 });
 
 test('collector obtains a guest token and collects without manual credentials', async t => {
@@ -179,7 +179,7 @@ test('collector obtains a guest token and collects without manual credentials', 
       return [normalizeBus({ vehplate: 'TEST-GUEST' }, 'A1', NOW)];
     }
   });
-  const before = collector.getStatus();
+  const before = await collector.getStatus();
   assert.equal(before.authMode, 'guest');
   assert.equal(before.tokenSource, 'guest');
   assert.equal(before.requiresToken, false);
@@ -189,8 +189,8 @@ test('collector obtains a guest token and collects without manual credentials', 
   assert.equal(receivedToken, 'guest-provider-test-token');
   assert.equal(db.getSetting('fms_token'), '');
   assert.equal(db.getTotalSnapshotsCount(), 1);
-  assert.equal(collector.getStatus().connectionState, 'healthy');
-  assert.equal(JSON.stringify(collector.getStatus()).includes(receivedToken), false);
+  assert.equal((await collector.getStatus()).connectionState, 'healthy');
+  assert.equal(JSON.stringify(await collector.getStatus()).includes(receivedToken), false);
 });
 
 test('collector gives environment credentials precedence and never exposes them', async t => {
@@ -208,9 +208,9 @@ test('collector gives environment credentials precedence and never exposes them'
   assert.equal(result.success, true);
   assert.equal(receivedToken, TOKEN);
   assert.equal(guestCalls, 0);
-  assert.equal(collector.getStatus().authMode, 'manual');
-  assert.equal(JSON.stringify(collector.getStatus()).includes(TOKEN), false);
-  assert.equal(collector.getStatus().lastPolledAt, NOW);
+  assert.equal((await collector.getStatus()).authMode, 'manual');
+  assert.equal(JSON.stringify(await collector.getStatus()).includes(TOKEN), false);
+  assert.equal((await collector.getStatus()).lastPolledAt, NOW);
 });
 
 test('an expired guest session is renewed once before storing a successful collection', async t => {
@@ -255,7 +255,7 @@ test('repeated guest authorization failures stop after one renewal without stori
   assert.equal(issued, 2);
   assert.equal(invalidations, 1);
   assert.equal(db.getTotalSnapshotsCount(), 0);
-  assert.equal(collector.getStatus().connectionState, 'error');
+  assert.equal((await collector.getStatus()).connectionState, 'error');
 });
 
 test('provider application errors do not trigger session renewal or create a successful empty poll', async t => {
@@ -276,7 +276,7 @@ test('provider application errors do not trigger session renewal or create a suc
   assert.equal(attempts, 1);
   assert.equal(invalidations, 0);
   assert.equal(db.getTotalSnapshotsCount(), 0);
-  assert.equal(collector.getStatus().lastPolledAt, 0);
+  assert.equal((await collector.getStatus()).lastPolledAt, 0);
 });
 
 test('a rejected manual override is not silently replaced with guest authentication', async t => {
@@ -310,7 +310,7 @@ test('provider failure preserves existing history and successful poll time', asy
   assert.equal(result.success, false);
   assert.equal(result.statusCode, 502);
   assert.equal(db.getTotalSnapshotsCount(), 1);
-  assert.equal(collector.getStatus().lastPolledAt, timestamp);
+  assert.equal((await collector.getStatus()).lastPolledAt, timestamp);
   assert.equal(collector.isPolling, false);
 });
 
@@ -331,18 +331,21 @@ test('a successful empty poll removes old buses from the current fleet', async t
 test('concurrent poll requests share one provider request and one stored batch', async t => {
   const db = withDatabase(t);
   let release;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
   let calls = 0;
   const collector = new BusCollector(db, {
     env: { FMS_TOKEN: TOKEN }, tokenProvider: guestProvider(),
     fetchBuses: async () => {
       calls++;
+      markStarted();
       await new Promise(resolve => { release = resolve; });
       return [normalizeBus({ vehplate: 'TEST-ONE-POLL' }, 'A1', Date.now())];
     }
   });
   const first = collector.pollNow();
   const second = collector.pollNow();
-  await Promise.resolve();
+  await started;
   assert.equal(calls, 1);
   release();
   const results = await Promise.all([first, second]);
@@ -374,7 +377,7 @@ test('automatic collection uses direct uNivUS guest sessions and retains GPS and
   assert.equal(result.dataProvider, 'univus');
   assert.equal(result.coverage, 'route-fleet');
   assert.equal(result.providerWarning, null);
-  const status = collector.getStatus();
+  const status = await collector.getStatus();
   assert.equal(status.hasToken, true);
   assert.equal(status.tokenExpiresAt, null, 'Opaque session expiry must not be invented');
   assert.equal(status.sessionRenewAt, univusClient.getStatus().sessionRenewAt);
@@ -409,7 +412,7 @@ test('temporary direct failures use labelled public observations and direct coll
   assert.equal(fallback.coverage, 'stop-arrivals');
   assert.match(fallback.providerWarning, /uNivUS/);
   assert.equal(db.getLatestPoll().source_provider, 'community');
-  assert.equal(collector.getStatus().configuredProvider, 'univus');
+  assert.equal((await collector.getStatus()).configuredProvider, 'univus');
   const recovered = await collector.pollNow();
   assert.equal(recovered.success, true);
   assert.equal(recovered.dataProvider, 'univus');
@@ -432,7 +435,7 @@ test('a failed public fallback preserves previous observations and never commits
   assert.equal(result.dataProvider, 'community');
   assert.match(result.error, /stale/);
   assert.equal(db.getTotalSnapshotsCount(), 1);
-  assert.equal(collector.getStatus().lastPolledAt, NOW - 1);
+  assert.equal((await collector.getStatus()).lastPolledAt, NOW - 1);
 });
 
 test('manual and explicitly direct configurations never silently switch providers', async t => {
@@ -461,8 +464,8 @@ test('explicit public mode does not acquire or forward any credentials', async t
   const result = await collector.pollNow();
   assert.equal(result.success, true);
   assert.equal(result.authMode, 'public');
-  assert.equal(collector.getStatus().hasToken, false);
-  assert.equal(collector.getStatus().tokenSource, 'none');
+  assert.equal((await collector.getStatus()).hasToken, false);
+  assert.equal((await collector.getStatus()).tokenSource, 'none');
 });
 
 test('status attributes stored observations correctly after restart before direct collection resumes', async t => {
@@ -471,10 +474,154 @@ test('status attributes stored observations correctly after restart before direc
     dataProvider: 'community', coverage: 'stop-arrivals', monitoredStops: ['UTOWN']
   });
   const collector = new BusCollector(db, { env: {}, now: () => NOW, univusClient: modernClient() });
-  const status = collector.getStatus();
+  const status = await collector.getStatus();
   assert.equal(status.dataProvider, 'community');
   assert.equal(status.configuredProvider, 'univus');
   assert.equal(status.authMode, 'guest');
   assert.equal(status.coverage, 'stop-arrivals');
   assert.deepEqual(status.monitoredStops, ['UTOWN']);
+});
+
+function asyncDatabase(t) {
+  const stored = withDatabase(t);
+  const calls = [];
+  const db = {};
+  for (const method of ['getSetting', 'setSetting', 'deleteSetting', 'recordPoll', 'getLatestPoll', 'getTotalSnapshotsCount']) {
+    db[method] = async (...args) => {
+      calls.push(method);
+      await Promise.resolve();
+      return stored[method](...args);
+    };
+  }
+  return { db, stored, calls };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('collector defers shared database access and resolves stored credentials and status asynchronously', async t => {
+  const { db, stored, calls } = asyncDatabase(t);
+  stored.setSetting('fms_token', TOKEN);
+  stored.setSetting('last_attempt_at', NOW);
+  stored.recordPoll([normalizeBus({ vehplate: 'TEST-SHARED-STATUS' }, 'A1', NOW)], NOW);
+  const collector = new BusCollector(db, { env: {}, now: () => NOW, tokenProvider: guestProvider() });
+  t.after(() => collector.stop());
+  assert.deepEqual(calls, [], 'Constructing a cold function must not read the database');
+  assert.equal(await collector.getToken(), TOKEN);
+  const status = await collector.getStatus();
+  assert.equal(status.authMode, 'manual');
+  assert.equal(status.configuredProvider, 'connectx');
+  assert.equal(status.connectionState, 'healthy');
+  assert.equal(status.lastPolledAt, NOW);
+  assert.equal(status.totalSnapshots, 1);
+  assert.equal(status.collectionMode, 'on-demand');
+  assert.equal(status.nextPollInSec, null);
+  assert.equal(JSON.stringify(status).includes(TOKEN), false);
+  collector.start();
+  const scheduled = await collector.getStatus();
+  assert.equal(scheduled.collectionMode, 'scheduled');
+  assert.equal(scheduled.nextPollInSec, 600);
+});
+
+test('collection stays pending until shared observations and error cleanup are persisted', async t => {
+  const { db, stored } = asyncDatabase(t);
+  stored.setSetting('last_error', 'Previous failure');
+  const writeStarted = deferred();
+  const allowWrite = deferred();
+  const cleanupStarted = deferred();
+  const allowCleanup = deferred();
+  db.recordPoll = async (...args) => {
+    writeStarted.resolve();
+    await allowWrite.promise;
+    return stored.recordPoll(...args);
+  };
+  db.deleteSetting = async key => {
+    cleanupStarted.resolve();
+    await allowCleanup.promise;
+    return stored.deleteSetting(key);
+  };
+  const collector = new BusCollector(db, {
+    env: { FMS_TOKEN: TOKEN }, now: () => NOW,
+    fetchBuses: async () => [normalizeBus({ vehplate: 'TEST-SHARED-COMMIT' }, 'A1', NOW)]
+  });
+  let settled = false;
+  const pending = collector.pollNow().then(result => { settled = true; return result; });
+  try {
+    await writeStarted.promise;
+    assert.equal(settled, false);
+    assert.equal(collector.isPolling, true);
+    assert.equal(stored.getTotalSnapshotsCount(), 0);
+    assert.equal(stored.getSetting('last_attempt_at'), String(NOW));
+    allowWrite.resolve();
+    await cleanupStarted.promise;
+    assert.equal(settled, false, 'A response cannot report success before cleanup is durable');
+    assert.equal(stored.getTotalSnapshotsCount(), 1);
+    assert.equal(stored.getSetting('last_error'), 'Previous failure');
+    allowCleanup.resolve();
+    const result = await pending;
+    assert.equal(result.success, true);
+    assert.equal(stored.getSetting('last_error'), null);
+    assert.equal(collector.isPolling, false);
+  } finally {
+    allowWrite.resolve();
+    allowCleanup.resolve();
+    await pending;
+  }
+});
+
+test('a rejected shared database commit cannot report a successful collection', async t => {
+  const { db, stored } = asyncDatabase(t);
+  db.recordPoll = async () => {
+    await Promise.resolve();
+    throw new Error('Private database connection detail');
+  };
+  const collector = new BusCollector(db, {
+    env: { FMS_TOKEN: TOKEN }, now: () => NOW,
+    fetchBuses: async () => [normalizeBus({ vehplate: 'TEST-NOT-COMMITTED' }, 'A1', NOW)]
+  });
+  const result = await collector.pollNow();
+  assert.equal(result.success, false);
+  assert.equal(result.statusCode, 502);
+  assert.equal(result.error.includes('Private database connection detail'), false);
+  assert.equal(stored.getTotalSnapshotsCount(), 0);
+  assert.equal(stored.getSetting('last_error'), result.error);
+  assert.equal((await collector.getStatus()).lastPolledAt, 0);
+  assert.equal(collector.isPolling, false);
+});
+
+test('failed asynchronous attempt recording stops collection even if error recording also fails', async t => {
+  const { db, stored } = asyncDatabase(t);
+  db.setSetting = async () => { throw new Error('Database unavailable'); };
+  let providerCalls = 0;
+  const collector = new BusCollector(db, {
+    env: { FMS_TOKEN: TOKEN }, now: () => NOW,
+    fetchBuses: async () => { providerCalls++; return []; }
+  });
+  const result = await collector.pollNow();
+  assert.equal(result.success, false);
+  assert.equal(providerCalls, 0);
+  assert.equal(stored.getLatestPoll(), null);
+  assert.equal(collector.isPolling, false);
+});
+
+test('stopping the scheduler during a shared state read prevents a new provider poll', async t => {
+  const { db } = asyncDatabase(t);
+  const allowRead = deferred();
+  db.getSetting = async () => { await allowRead.promise; return '0'; };
+  let providerCalls = 0;
+  const collector = new BusCollector(db, {
+    env: { FMS_TOKEN: TOKEN }, now: () => NOW,
+    fetchBuses: async () => { providerCalls++; return []; }
+  });
+  t.after(() => collector.stop());
+  collector.start();
+  collector.stop();
+  allowRead.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(providerCalls, 0);
+  assert.equal(collector.isPolling, false);
+  assert.equal(collector.timer, null);
 });

@@ -1,12 +1,13 @@
-﻿# NUS Shuttle Bus Crowd Tracker
+# NUS Shuttle Bus Crowd Tracker
 
-A Node.js application that queries uNivUS directly for real NUS shuttle positions and passenger loads, stores observations in SQLite, and shows recorded crowd patterns. The backend uses built-in Node modules; the map uses Leaflet and external map tiles.
+A Node.js application that queries uNivUS directly for real NUS shuttle positions and passenger loads, stores observations in local SQLite or shared Turso storage, and shows recorded crowd patterns. The backend uses Node modules and the libSQL HTTP client; the map uses Leaflet and external map tiles.
 
 ## Run locally
 
-Use Node.js 22.13 or newer (native `node:sqlite` required).
+Use Node.js 24 (also selected for Vercel). Install dependencies before starting:
 
 ```powershell
+npm.cmd ci
 npm.cmd start
 ```
 
@@ -49,13 +50,14 @@ Guest cookies are never written to the database, returned by dashboard APIs, inc
 | `FMS_TOKEN` | Optional manual ConnectX override in `auto`/`connectx` mode. Leave blank for automatic uNivUS sessions. |
 | `UNIVUS_HTD_API`, `UNIVUS_APP_API` | Optional public-app identifier overrides for the older ConnectX authentication flow only. |
 | `UNIVUS_APP_VERSION` | Older ConnectX guest client version; default `2.56.0`. |
-| `BUS_DB_PATH` | SQLite path; default `data/bus_tracker.db` relative to the project. `:memory:` is useful for isolated checks. |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Optional shared durable Turso database URL and read/write token. Configure both on Vercel to retain history across instances and deployments. |
+| `BUS_DB_PATH` | Used when Turso variables are absent. SQLite path; default `data/bus_tracker.db` relative to the project. `:memory:` is useful for isolated checks. |
 | `HOST` | Local server bind address; default `127.0.0.1`. |
 | `PORT` | Local HTTP port; default `3000`. |
 | `ADMIN_TOKEN` | Bearer credential for polling, settings, and history deletion. Required for remote administrative access. |
 | `CRON_SECRET` | Separate bearer credential required for `GET /api/cron`. |
 
-The app reads process environment variables; it does not load `.env` files automatically. The optional administrator token entered in the dashboard stays in page memory. Manual FMS tokens saved through Settings reside in the local SQLite file; keep that file private. Read-only telemetry endpoints are public to anyone who can reach the server. Local writes without `ADMIN_TOKEN` require loopback, a localhost Host header, and the same origin. Hosted writes require `ADMIN_TOKEN`.
+The app reads process environment variables; it does not load `.env` files automatically. The optional administrator token entered in the dashboard stays in page memory. Manual FMS tokens saved through Settings reside in the selected database; keep database access private. Read-only telemetry endpoints are public to anyone who can reach the server. Local writes without `ADMIN_TOKEN` require loopback, a localhost Host header, and the same origin. Hosted writes require `ADMIN_TOKEN`.
 
 The older [documented guest/FMS flow](https://suibianp.github.io/nus-nextbus-new-api/) remains available in explicit `connectx` mode: get-access-token, buswidget initialization, then `nextbus_token2` for ConnectX requests. Its documented ActiveBus query returned error 4 during verification; the default integration now queries uNivUS directly.
 
@@ -80,7 +82,8 @@ Tests use isolated databases and controlled HTTP responses, never your credentia
 - `src/provider_config.js`: source selection and coverage descriptions.
 - `src/provider_http.js`: bounded JSON requests and sanitized errors.
 - `src/collector.js`: collection, scheduling, provider selection, and diagnostics.
-- `src/db.js`: SQLite schema, safe upgrades, provider provenance, batches, and analytics.
+- `src/db.js`: local SQLite storage, safe upgrades, and selection of the configured database.
+- `src/remote_db.js` and `src/db_shared.js`: durable Turso storage, shared schema and validation, atomic batches, and analytics.
 - `src/routes.js`: configured route identifiers and display colors.
 - `src/server.js` and `api/index.js`: local and serverless API handlers.
 - `public/`: dashboard, charts, map, and styles.
@@ -88,4 +91,4 @@ Tests use isolated databases and controlled HTTP responses, never your credentia
 
 Database upgrades retain existing identifiable observations and provider provenance. Older records without proven live provenance are removed during the legacy upgrade; ambiguous default measurements become unknown. No history is generated at startup.
 
-See [VERCEL.md](VERCEL.md) for deployment and storage limitations. Durable historical collection needs a persistent process and disk, or a shared database implementation.
+See [VERCEL.md](VERCEL.md) for step-by-step Vercel deployment. Configure Turso for durable history and use an external scheduler or Vercel Pro cron for ten-minute collection. The default configuration supports Hobby with manual polling; without Turso, hosted storage is temporary.

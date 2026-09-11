@@ -8,6 +8,7 @@ const suites = [
   'tests/test_univus_client.js',
   'tests/test_public_feed.js',
   'tests/test_database.js',
+  'tests/test_remote_database.js',
   'tests/test_server_endpoints.js',
   'tests/test_vercel_handler.js',
   'tests/test_frontend.js',
@@ -17,7 +18,7 @@ const suites = [
 // Each suite runs separately with an in-memory database and no inherited
 // provider credentials, so npm test cannot alter application data.
 const env = { ...process.env, BUS_DB_PATH: ':memory:', FMS_ROUTES: 'A1,A2,D1,D2,E,K', TZ: 'UTC' };
-for (const key of ['FMS_TOKEN', 'BUS_PROVIDER', 'BUS_STOPS', 'ADMIN_TOKEN', 'CRON_SECRET', 'VERCEL', 'AWS_LAMBDA_FUNCTION_NAME']) {
+for (const key of ['FMS_TOKEN', 'BUS_PROVIDER', 'BUS_STOPS', 'ADMIN_TOKEN', 'CRON_SECRET', 'VERCEL', 'AWS_LAMBDA_FUNCTION_NAME', 'TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN']) {
   delete env[key];
 }
 const result = spawnSync(process.execPath, ['--test', ...suites], {

@@ -120,18 +120,21 @@ export function createRequestHandler({ db = dbInstance, collector = collectorIns
       if (expectedMethod === 'POST') authorizeAdmin(req, env);
       const now = Date.now();
       if (pathname === '/api/status') {
-        return sendJson(res, 200, { ...collector.getStatus(), routes: NUS_ROUTES,
-          knownFleetCount: db.getAllFleetStatus().length, availableDates: db.getAvailableDates(),
+        const [status, fleet, availableDates] = await Promise.all([
+          collector.getStatus(), db.getAllFleetStatus(), db.getAvailableDates()
+        ]);
+        return sendJson(res, 200, { ...status, routes: NUS_ROUTES,
+          knownFleetCount: fleet.length, availableDates,
           timeZone: 'Asia/Singapore', storage: db.storage.type,
           adminRequired: Boolean(env.ADMIN_TOKEN) || !localRequest(req, env),
           settingsEditable: !env.FMS_TOKEN?.trim() });
       }
       if (pathname === '/api/live') {
-        const buses = db.getLatestLiveBuses();
-        const allFleet = db.getAllFleetStatus();
-        const status = collector.getStatus();
+        const [buses, allFleet, status, latestPoll] = await Promise.all([
+          db.getLatestLiveBuses(), db.getAllFleetStatus(), collector.getStatus(), db.getLatestPoll()
+        ]);
         return sendJson(res, 200, { timestamp: now, lastPolledAt: status.lastPolledAt, isStale: status.isStale,
-          latestPoll: db.getLatestPoll(),
+          latestPoll,
           buses, allFleet, activeCount: buses.length,
           inactiveCount: allFleet.filter(bus => bus.status === 'inactive').length,
           staleCount: allFleet.filter(bus => bus.status === 'stale').length,
@@ -143,14 +146,18 @@ export function createRequestHandler({ db = dbInstance, collector = collectorIns
         const selectedDate = mode === 'date' ? url.searchParams.get('date') : null;
         const { start, end } = mode === 'date' ? dateRange(selectedDate) : { start: now - DAY_MS, end: now };
         const effectiveEnd = Math.min(end, now);
+        const [history, dataSources, availableDates] = await Promise.all([
+          db.get24HourHistory(start, effectiveEnd), db.getDataSources(start, effectiveEnd), db.getAvailableDates()
+        ]);
         return sendJson(res, 200, { mode, selectedDate, currentTime: now, timeZone: 'Asia/Singapore',
           queryRange: { start, end, effectiveEnd, startIso: new Date(start).toISOString(), endIso: new Date(end).toISOString() },
-          ...db.get24HourHistory(start, effectiveEnd), dataSources: db.getDataSources(start, effectiveEnd),
-          availableDates: db.getAvailableDates(), routes: NUS_ROUTES });
+          ...history, dataSources, availableDates, routes: NUS_ROUTES });
       }
       if (pathname === '/api/analytics/optimize') {
-        return sendJson(res, 200, { ...db.getHourlyAnalytics(now - 7 * DAY_MS, now), timeZone: 'Asia/Singapore',
-          dataSources: db.getDataSources(now - 7 * DAY_MS, now),
+        const [analytics, dataSources] = await Promise.all([
+          db.getHourlyAnalytics(now - 7 * DAY_MS, now), db.getDataSources(now - 7 * DAY_MS, now)
+        ]);
+        return sendJson(res, 200, { ...analytics, timeZone: 'Asia/Singapore', dataSources,
           note: 'Observed averages from the past seven days. Sampling coverage varies; these are not travel forecasts.' });
       }
       if (pathname === '/api/poll-now' || pathname === '/api/cron') {
@@ -168,24 +175,27 @@ export function createRequestHandler({ db = dbInstance, collector = collectorIns
         }
         if (env.FMS_TOKEN?.trim()) throw new RequestError(409, 'FMS_TOKEN is configured by the deployment environment.');
         if (collector.isPolling) throw new RequestError(409, 'Wait for the current poll to finish before changing credentials.');
-        db.setSetting('fms_token', body.fms_token.trim());
-        db.deleteSetting('last_error');
-        db.deleteSetting('last_attempt_at');
-        const status = collector.getStatus();
+        await db.setSetting('fms_token', body.fms_token.trim());
+        await db.deleteSetting('last_error');
+        await db.deleteSetting('last_attempt_at');
+        const status = await collector.getStatus();
         return sendJson(res, 200, { success: true, authMode: status.authMode, dataProvider: status.dataProvider, hasToken: status.hasToken });
       }
       if (pathname === '/api/clear-all') {
         if (collector.isPolling) throw new RequestError(409, 'Wait for the current poll to finish before clearing history.');
-        const clearedCount = db.clearAllSnapshots();
-        db.deleteSetting('last_error');
+        const clearedCount = await db.clearAllSnapshots();
+        await db.deleteSetting('last_error');
         return sendJson(res, 200, { success: true, clearedCount, remainingSnapshots: 0 });
       }
       if (pathname === '/api/export') {
         const rawLimit = url.searchParams.get('limit') || '10000';
         if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 100000) throw new RequestError(400, 'limit must be between 1 and 100000.');
-        const rows = db.getExportRows(Number(rawLimit));
+        const rows = await db.getExportRows(Number(rawLimit));
         const columns = ['timestamp', 'time_iso', 'time_str', 'route_code', 'vehplate', 'lat', 'lng', 'speed', 'capacity', 'crowd_level', 'occupancy', 'ridership', 'source_provider', 'data_coverage', 'monitored_stops'];
         const csv = columns.join(',') + '\r\n' + rows.map(row => columns.map(key => csvCell(row[key])).join(',')).join('\r\n');
+        if (hosted(env) && Buffer.byteLength(csv) > 4_000_000) {
+          throw new RequestError(413, 'Export exceeds the hosted response limit. Retry with a smaller limit, for example /api/export?limit=1000.');
+        }
         res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="nus_bus_crowd_data.csv"',
           'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': Buffer.byteLength(csv) });
         return res.end(csv);
@@ -227,7 +237,7 @@ if (!hosted(process.env) && process.argv[1] && path.resolve(process.argv[1]) ===
     collectorInstance.stop();
     await new Promise(resolve => server.close(resolve));
     if (collectorInstance.pendingPoll) await collectorInstance.pendingPoll;
-    dbInstance.close();
+    await dbInstance.close();
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);

@@ -11,7 +11,7 @@
     "verify-live": "node scripts/verify_live.js"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": "24.x"
   },
   "keywords": [
     "nus",
@@ -22,5 +22,8 @@
   ],
   "author": "",
   "license": "ISC",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@libsql/client": "0.18.0"
+  }
 }
