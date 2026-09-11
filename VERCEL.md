@@ -33,83 +33,69 @@ Before clicking **Deploy**, add these variables to the project's **Production** 
 | --- | --- |
 | `TURSO_DATABASE_URL` | Your Turso database URL |
 | `TURSO_AUTH_TOKEN` | Its read/write database token |
-| `ADMIN_TOKEN` | A long, random secret for dashboard polling, settings, and history deletion |
-| `CRON_SECRET` | A different long, random secret for scheduled polling |
+| `ADMIN_TOKEN` | A long, random secret for settings modifications and history deletion (optional) |
 | `BUS_PROVIDER` | `auto` (recommended default), or `univus` to disable the public fallback |
 
-You can generate each administrator/cron secret locally with:
+You can generate an administrator secret locally with:
 
 ```powershell
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-Use distinct secrets and keep them out of Git. All these variables are backend-only. You do not need a NUS login, a manual FMS token, `HOST`, or `PORT` on Vercel. Automatic uNivUS guest sessions are created as needed and renewed daily; a new function instance establishes its own session.
+No authentication secrets are required for polling: `/api/cron` collects without any tokens. All these variables are backend-only. You do not need a NUS login, a manual FMS token, `HOST`, or `PORT` on Vercel. Automatic uNivUS guest sessions are created as needed and renewed daily; a new function instance establishes its own session.
 
 If you enable Preview deployments, give them a separate Turso database and separate secrets so preview administrative actions cannot clear production history. Changing Vercel environment variables requires a redeployment.
 
 ## 4. Verify the deployment
 
 1. Open `https://YOUR-PROJECT.vercel.app/api/status`. Expect HTTP 200 and `"storage":"turso"`. A configuration error means the Turso variables need to be set or corrected.
-2. Open the dashboard, go to **Data & API Settings**, and enter your `ADMIN_TOKEN` in the administrator token field. This value stays in page memory; enter it again after reloading.
+2. Open the dashboard.
 3. Click **Poll Now**. A successful pull should update the last collection time. A successful empty fleet is valid; buses may not be running.
 4. Check the map/live readings and history. To confirm sharing, redeploy and check that the recorded history is retained. Historical readings become stale after fifteen minutes; a new poll refreshes them.
 
-A 401 from an administrative action means the supplied administrator token does not match. A 502 from polling means the live feed or storage failed; check the dashboard diagnostics and Vercel function logs. Missing or invalid database configuration returns HTTP 503 with a setup message. Turso access, connectivity, and SQL errors also return HTTP 503 with a safe error code; driver messages and credentials are not exposed.
+A 502 from polling means the live feed or storage failed; check the dashboard diagnostics and Vercel function logs. Missing or invalid database configuration returns HTTP 503 with a setup message. Turso access, connectivity, and SQL errors also return HTTP 503 with a safe error code; driver messages and credentials are not exposed.
 
-## 5. Set up automatic collection
+## 5. Automatic JavaScript polling (every 10 minutes)
 
-The repository includes [`.github/workflows/collect-buses.yml`](.github/workflows/collect-buses.yml), which calls `GET /api/cron` every ten minutes. This works with Vercel Hobby because GitHub Actions supplies the schedule. `vercel.json` does not declare a paid-plan cron. Dashboard refreshes only read stored data; leaving a browser open does not collect new observations.
+Collection runs every ten minutes using pure JavaScript without requiring any authentication or secrets:
 
-### Activate the included GitHub Actions schedule
+### Method A: Standalone Node.js poller script
 
-1. Set a random `CRON_SECRET` in Vercel's **Production** environment and redeploy so the cron endpoint can authenticate scheduled requests.
-2. In your GitHub repository, open **Settings > Secrets and variables > Actions**. Add the following repository settings:
+Run the included JavaScript poller on any machine, container, or background runner:
 
-   | Type | Name | Value |
-   | --- | --- | --- |
-   | Variable | `TRACKER_URL` | Your stable production origin, such as `https://YOUR-PROJECT.vercel.app`, with no API path. Use the project domain, not a URL tied to one deployment. |
-   | Secret | `CRON_SECRET` | The exact same secret configured in Vercel. |
-   | Secret, only if Deployment Protection is enabled | `VERCEL_AUTOMATION_BYPASS_SECRET` | Your Vercel protection bypass secret for automation. |
+```powershell
+# Set TRACKER_URL to your Vercel origin to poll the deployment over HTTP
+$env:TRACKER_URL = 'https://YOUR-PROJECT.vercel.app'
+npm run poll
+```
 
-3. Commit and push the workflow and `scripts/poll_scheduled.js` to the repository's default branch. Enable GitHub Actions if GitHub prompts you. The workflow runs only on the default branch and is disabled in forks.
-4. Open **Actions > Collect buses every 10 minutes > Run workflow**, select the default branch, and run it once. The collection step must succeed and report a record count and timestamp. Confirm `/api/status` now has the new `lastPolledAt` value.
-5. Scheduled runs are requested at **:07, :17, :27, :37, :47, and :57** each hour, even when the website is closed. Check the Actions run history and the dashboard's last collection time to confirm ongoing collection.
+Or run directly:
 
-The schedule is not active merely because the workflow exists locally: it must be on the default branch with the URL and matching secrets configured. The runner makes one authenticated request and succeeds only if the endpoint confirms a committed collection. HTTP errors, redirects, invalid JSON, and unsuccessful collection responses fail the workflow. Secrets and raw server responses are not logged. Jobs do not overlap each other, and requests are not retried automatically because a timed-out request may already have committed its data.
+```powershell
+node scripts/poll.js
+```
 
-[GitHub's scheduler](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule) can delay or drop runs under load; it does not guarantee exact ten-minute timing. Scheduled workflows in public repositories are disabled after 60 days without repository activity. If you need more consistent timing, use Vercel Pro cron or a dedicated external scheduler. Use only one hosted scheduler to avoid duplicate collection. GitHub Actions usage limits and Vercel function usage limits apply.
+The script polls immediately on startup, then continues polling every 10 minutes without authentication. Pass `--once` if you only want to execute a single poll cycle (`node scripts/poll.js --once`).
 
-### Vercel Pro cron
+### Method B: Browser client-side automatic polling
 
-As an alternative to GitHub Actions, disable **Collect buses every 10 minutes** in GitHub Actions, add this top-level property to `vercel.json`, keeping the other properties, and redeploy:
+When the dashboard is open in any browser tab, client-side JavaScript automatically polls the uNivUS API every 10 minutes (and on initial load if data is stale) without authentication.
+
+### Method C: Unauthenticated HTTP endpoint
+
+You can trigger a poll from any JavaScript client, webhook, or cron runner by sending a plain `GET` request without authentication headers:
+
+```powershell
+Invoke-RestMethod -Uri 'https://YOUR-PROJECT.vercel.app/api/cron'
+```
+
+If you use Vercel Pro cron, add this top-level property to `vercel.json`:
 
 ```json
 "crons": [
   { "path": "/api/cron", "schedule": "*/10 * * * *" }
 ]
 ```
-
-Vercel cron runs on production deployments and supplies `Authorization: Bearer <CRON_SECRET>` automatically. Hobby cron is limited to once per day and rejects a ten-minute schedule during deployment. See [cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing) and [cron authentication](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs).
-
-### Another external scheduler
-
-If you prefer a dedicated scheduler, disable the GitHub Actions workflow and configure your scheduler to send:
-
-- Method: `GET`
-- URL: `https://YOUR-PROJECT.vercel.app/api/cron`
-- Header: `Authorization: Bearer YOUR_CRON_SECRET`
-- Interval: every ten minutes
-- Timeout: at least 60 seconds
-
-Store the header value in the scheduler's secret settings. If Vercel Deployment Protection covers that URL, configure its automation bypass for the scheduler as well. Ordinary function usage limits still apply.
-
-To test from PowerShell after setting `CRON_SECRET` in your local session:
-
-```powershell
-Invoke-RestMethod -Uri 'https://YOUR-PROJECT.vercel.app/api/cron' -Headers @{ Authorization = "Bearer $env:CRON_SECRET" }
-```
-
-The response reports success only after a complete provider batch is committed. No collection timer runs inside Vercel functions. The dashboard shows on-demand/external scheduling because it cannot predict when an external scheduler will run.
 
 ## Local checks and development
 

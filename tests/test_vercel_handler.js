@@ -106,17 +106,11 @@ test('serverless public reads do not contact the provider or create data', async
   assert.equal(await db.getTotalSnapshotsCount(), 0);
 });
 
-test('serverless cron requires a configured secret and rejects incorrect authorization', async () => {
+test('serverless cron polls without requiring authentication or secret', async () => {
   let calls = 0;
   fetchUnivus = async () => { calls++; return []; };
   delete process.env.CRON_SECRET;
-  assert.equal((await invoke('/api/cron')).status, 503);
-  process.env.CRON_SECRET = 'test-cron-secret';
-  assert.equal((await invoke('/api/cron')).status, 401);
-  assert.equal((await invoke('/api/cron', { headers: { authorization: 'Bearer wrong' } })).status, 401);
-  assert.equal(calls, 0);
-  assert.equal(guestCalls, 0);
-  const res = await invoke('/api/cron', { headers: { authorization: 'Bearer test-cron-secret' } });
+  const res = await invoke('/api/cron');
   assert.equal(res.status, 200);
   assert.equal(res.json.success, true);
   assert.equal(res.json.polledCount, 0);
@@ -125,15 +119,13 @@ test('serverless cron requires a configured secret and rejects incorrect authori
   assert.equal(calls, 1);
   assert.equal(univusCalls, 1);
   assert.equal(guestCalls, 1);
-  assert.equal(res.data.includes('test-cron-secret'), false);
   assert.equal(res.data.includes('serverless-guest-provider-token'), false);
   const status = await invoke('/api/status');
   assert.equal(status.json.dataProvider, 'univus');
   assert.equal(status.json.hasToken, true);
   assert.equal(status.json.tokenExpiresAt, null);
   assert.equal(status.json.sessionRenewAt, sessionRenewAt);
-  assert.doesNotMatch(status.data, /serverless-private-session-cookie|sessionCookie|test-cron-secret/);
-  delete process.env.CRON_SECRET;
+  assert.doesNotMatch(status.data, /serverless-private-session-cookie|sessionCookie/);
 });
 
 test('serverless authorization cannot be bypassed with forwarded localhost headers', async () => {

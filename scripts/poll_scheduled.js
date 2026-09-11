@@ -22,11 +22,14 @@ function headerSecret(value, name) {
   return value;
 }
 
-/** Trigger one authorized collection. A failed response is never retried here. */
+/** Trigger one collection without requiring authentication. A failed response is never retried here. */
 export async function pollScheduled({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
   const origin = trackerOrigin(env.TRACKER_URL);
-  const secret = headerSecret(env.CRON_SECRET, 'CRON_SECRET');
-  const headers = { Authorization: `Bearer ${secret}` };
+  const headers = {};
+  if (env.CRON_SECRET !== undefined && env.CRON_SECRET !== '') {
+    const secret = headerSecret(env.CRON_SECRET, 'CRON_SECRET');
+    headers.Authorization = `Bearer ${secret}`;
+  }
   const bypass = env.VERCEL_AUTOMATION_BYPASS_SECRET;
   if (bypass !== undefined && bypass !== '') {
     headers['x-vercel-protection-bypass'] = headerSecret(bypass, 'VERCEL_AUTOMATION_BYPASS_SECRET');

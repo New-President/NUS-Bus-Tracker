@@ -136,10 +136,6 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
         return sendJson(res, 405, { error: 'Method not allowed.' });
       }
       if (expectedMethod === 'POST') authorizeAdmin(req, env);
-      if (pathname === '/api/cron') {
-        if (!env.CRON_SECRET) throw new RequestError(503, 'Configure CRON_SECRET to enable scheduled collection.');
-        if (!hasBearer(req, env.CRON_SECRET)) throw new RequestError(401, 'Unauthorized cron request.');
-      }
       if (expectedMethod) resolveDependencies();
       const now = Date.now();
       if (pathname === '/api/status') {

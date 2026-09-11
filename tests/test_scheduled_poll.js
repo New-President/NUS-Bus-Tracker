@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pollScheduled } from '../scripts/poll_scheduled.js';
+import { runPollOnce, startPoller } from '../scripts/poll.js';
 
 const env = { TRACKER_URL: 'https://tracker.example', CRON_SECRET: 'private-cron-secret' };
 const timestamp = Date.parse('2026-09-11T12:30:00.000Z');
@@ -40,6 +41,18 @@ test('a protected Vercel deployment receives the optional bypass header, and emp
   assert.equal(actual.recordsCount, 0);
 });
 
+test('scheduled polling works without any authentication or CRON_SECRET', async () => {
+  let calls = 0;
+  const actual = await pollScheduled({ env: { TRACKER_URL: 'https://tracker.example' }, fetchImpl: async (url, options) => {
+    calls++;
+    assert.equal(url, 'https://tracker.example/api/cron');
+    assert.equal(options.headers.Authorization, undefined);
+    return json({ ...result });
+  } });
+  assert.equal(calls, 1);
+  assert.deepEqual(actual, { recordsCount: 9, timestamp: '2026-09-11T12:30:00.000Z' });
+});
+
 test('unsafe or incomplete origin and secret configuration is rejected before sending a request', async () => {
   const invalid = [
     ...[undefined, '', 'tracker.example', 'http://tracker.example', 'https:tracker.example',
@@ -47,7 +60,7 @@ test('unsafe or incomplete origin and secret configuration is rejected before se
       'https://tracker.example//', 'https://tracker.example/path/..',
       'https://tracker.example?', 'https://tracker.example#', 'https://tracker.example?token=private',
       'https://tracker.example/#private'].map(TRACKER_URL => ({ ...env, TRACKER_URL })),
-    ...[undefined, '', ' ', 'private\rheader', 'private\nheader'].map(CRON_SECRET => ({ ...env, CRON_SECRET })),
+    ...[' ', 'private\rheader', 'private\nheader'].map(CRON_SECRET => ({ ...env, CRON_SECRET })),
     ...['private\rheader', 'private\nheader', ' '].map(VERCEL_AUTOMATION_BYPASS_SECRET => ({ ...env, VERCEL_AUTOMATION_BYPASS_SECRET }))
   ];
   for (const invalidEnv of invalid) {
@@ -108,4 +121,26 @@ test('the CLI exits unsuccessfully with a safe configuration diagnostic and no s
   assert.equal(child.status, 1);
   assert.equal(child.stdout, '');
   assert.equal(child.stderr.trim(), 'Configure TRACKER_URL as an HTTPS origin without a path, query, fragment, or credentials.');
+});
+
+test('JavaScript poller startPoller can start and stop cleanly', async () => {
+  const poller = startPoller({ env: { TRACKER_URL: 'https://tracker.example' }, intervalMs: 600000 });
+  assert.equal(typeof poller.stop, 'function');
+  poller.stop();
+});
+
+test('runPollOnce routes through pollScheduled without authentication when TRACKER_URL is set', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, 'https://tracker.example/api/cron');
+    assert.equal(options.headers.Authorization, undefined);
+    return json(result);
+  };
+  try {
+    const res = await runPollOnce({ env: { TRACKER_URL: 'https://tracker.example' } });
+    assert.equal(res.recordsCount, 9);
+    assert.equal(res.timestamp, '2026-09-11T12:30:00.000Z');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
