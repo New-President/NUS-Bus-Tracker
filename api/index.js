@@ -3,9 +3,12 @@
  * Handles all /api/* routes via universal request dispatcher.
  */
 
-import { handleRequest } from '../src/server.js';
+import { createRequestHandler, handleRequest } from '../src/server.js';
+
+export function createHandler(options) {
+  return createRequestHandler(options);
+}
 
 export default async function handler(req, res) {
   return handleRequest(req, res);
 }
-

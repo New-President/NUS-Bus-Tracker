@@ -1,10 +1,11 @@
-﻿import http from 'node:http';
+import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { dbInstance } from './db.js';
-import { collectorInstance } from './collector.js';
+import { DatabaseConfigurationError, getDatabase } from './db.js';
+import { BusCollector } from './collector.js';
+import { databaseFailure } from './database_errors.js';
 import { NUS_ROUTES } from './routes.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
@@ -98,7 +99,24 @@ function csvCell(value) {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
-export function createRequestHandler({ db = dbInstance, collector = collectorInstance, env = process.env } = {}) {
+let application;
+function getApplication() {
+  if (!application) {
+    const db = getDatabase();
+    application = { db, collector: new BusCollector(db) };
+  }
+  return application;
+}
+
+export function createRequestHandler({ db, collector, env = process.env } = {}) {
+  function resolveDependencies() {
+    if (!db && !collector && env === process.env) {
+      ({ db, collector } = getApplication());
+    } else {
+      db ||= getDatabase(env);
+      collector ||= new BusCollector(db, { env });
+    }
+  }
   return async function requestHandler(req, res) {
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -118,6 +136,11 @@ export function createRequestHandler({ db = dbInstance, collector = collectorIns
         return sendJson(res, 405, { error: 'Method not allowed.' });
       }
       if (expectedMethod === 'POST') authorizeAdmin(req, env);
+      if (pathname === '/api/cron') {
+        if (!env.CRON_SECRET) throw new RequestError(503, 'Configure CRON_SECRET to enable scheduled collection.');
+        if (!hasBearer(req, env.CRON_SECRET)) throw new RequestError(401, 'Unauthorized cron request.');
+      }
+      if (expectedMethod) resolveDependencies();
       const now = Date.now();
       if (pathname === '/api/status') {
         const [status, fleet, availableDates] = await Promise.all([
@@ -161,10 +184,6 @@ export function createRequestHandler({ db = dbInstance, collector = collectorIns
           note: 'Observed averages from the past seven days. Sampling coverage varies; these are not travel forecasts.' });
       }
       if (pathname === '/api/poll-now' || pathname === '/api/cron') {
-        if (pathname === '/api/cron') {
-          if (!env.CRON_SECRET) throw new RequestError(503, 'Configure CRON_SECRET to enable scheduled collection.');
-          if (!hasBearer(req, env.CRON_SECRET)) throw new RequestError(401, 'Unauthorized cron request.');
-        }
         const result = await collector.pollNow();
         return sendJson(res, result.success ? 200 : result.statusCode || 502, result);
       }
@@ -211,6 +230,12 @@ export function createRequestHandler({ db = dbInstance, collector = collectorIns
       }
       return sendJson(res, 404, { error: 'Not found.' });
     } catch (error) {
+      if (error instanceof DatabaseConfigurationError) return sendJson(res, 503, { success: false, error: error.message });
+      const failure = databaseFailure(error);
+      if (failure) {
+        console.error(`[Database] ${failure.databaseCode}: ${failure.error}`);
+        return sendJson(res, failure.statusCode, { success: false, ...failure });
+      }
       return sendJson(res, error.status || 500, { success: false, error: error instanceof RequestError ? error.message : 'Internal server error.' });
     }
   };
@@ -222,6 +247,8 @@ server.requestTimeout = 15000;
 server.headersTimeout = 10000;
 
 if (!hosted(process.env) && process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // Validate storage before listening or starting provider collection.
+  const { db, collector } = getApplication();
   const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || '127.0.0.1';
   server.once('error', error => {
@@ -231,13 +258,13 @@ if (!hosted(process.env) && process.argv[1] && path.resolve(process.argv[1]) ===
   server.listen(port, host, () => {
     console.log(`NUS Shuttle Bus Crowd Tracker: http://${host}:${server.address().port}`);
     console.log('Collection runs every 10 minutes. Automatic guest access renews daily; source and coverage are shown in the dashboard.');
-    collectorInstance.start();
+    collector.start();
   });
   const shutdown = async () => {
-    collectorInstance.stop();
+    collector.stop();
     await new Promise(resolve => server.close(resolve));
-    if (collectorInstance.pendingPoll) await collectorInstance.pendingPoll;
-    await dbInstance.close();
+    if (collector.pendingPoll) await collector.pendingPoll;
+    await db.close();
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);

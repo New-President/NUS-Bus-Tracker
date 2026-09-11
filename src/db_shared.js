@@ -2,7 +2,7 @@ export const ACTIVE_WINDOW_MS = 15 * 60 * 1000;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const BUCKET_MS = 10 * 60 * 1000;
 
-export const POLL_BATCH_COLUMNS = `
+const POLL_BATCH_COLUMNS = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp INTEGER NOT NULL,
     records_count INTEGER NOT NULL CHECK(records_count >= 0),

@@ -2,6 +2,10 @@ import { createClient } from '@libsql/client/web';
 import { ACTIVE_WINDOW_MS, DAY_MS, BUCKET_MS, SNAPSHOT_SCHEMA, AGGREGATE_COLUMNS, queryRange, normalizePoll } from './db_shared.js';
 
 const SETTINGS_SCHEMA = 'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)';
+const SCHEMA_VERSION = 4;
+const VERSION_SCHEMA = `CREATE TABLE IF NOT EXISTS bus_schema_version (
+  id INTEGER PRIMARY KEY CHECK(id = 1), version INTEGER NOT NULL
+)`;
 const REQUIRED_COLUMNS = {
   settings: ['key', 'value'],
   poll_batches: ['id', 'timestamp', 'records_count', 'source_provider', 'data_coverage', 'monitored_stops'],
@@ -45,14 +49,32 @@ export class RemoteBusDatabase {
 
   async initSchema() {
     const tables = Object.keys(REQUIRED_COLUMNS);
-    const [versionResult, ...columnResults] = await this.client.batch([
-      'PRAGMA user_version', ...tables.map(table => `PRAGMA table_info(${table})`)
+    const [legacyVersionResult, versionColumns, ...columnResults] = await this.client.batch([
+      'PRAGMA user_version', 'PRAGMA table_info(bus_schema_version)',
+      ...tables.map(table => `PRAGMA table_info(${table})`)
     ], 'read');
-    const version = Number(versionResult.rows[0].user_version);
+    // Turso Cloud exposes user_version as read-only. Retain its query only to
+    // recognize existing version 4 imports; new databases use our own table.
+    const legacyVersion = Number(legacyVersionResult.rows[0].user_version);
+    let version = legacyVersion;
+    const hasVersionTable = versionColumns.rows.length > 0;
+    if (hasVersionTable) {
+      const columns = new Set(versionColumns.rows.map(row => row.name));
+      if (!columns.has('id') || !columns.has('version')) {
+        throw new Error('Unsupported remote database schema for bus_schema_version');
+      }
+      const result = await this.client.execute('SELECT id, version FROM bus_schema_version');
+      if (result.rows.length !== 1 || result.rows[0].id !== 1 || !Number.isSafeInteger(result.rows[0].version)) {
+        throw new Error('Unsupported remote database schema version metadata');
+      }
+      version = result.rows[0].version;
+    }
     const existing = columnResults.some(result => result.rows.length > 0);
-    if (version > 4) throw new Error('Database schema is newer than this application supports');
-    if ((existing && version !== 4) || (!existing && version !== 0)) {
-      throw new Error('Unsupported remote database schema. Use a fresh Turso database or migrate the database locally before importing it.');
+    if (version > SCHEMA_VERSION || legacyVersion > SCHEMA_VERSION) {
+      throw new Error('Database schema is newer than this application supports');
+    }
+    if ((existing && version !== SCHEMA_VERSION) || (!existing && (hasVersionTable || version !== 0))) {
+      throw new Error('Unsupported remote database schema. Use a fresh Turso database or import a compatible version 4 schema.');
     }
     if (existing) {
       for (const [index, table] of tables.entries()) {
@@ -65,15 +87,18 @@ export class RemoteBusDatabase {
     // One atomic, idempotent bootstrap allows simultaneous cold starts. Defaults
     // never overwrite settings already saved by another function instance.
     await this.client.batch([
-      SETTINGS_SCHEMA, ...SNAPSHOT_SCHEMA.split(';').map(sql => sql.trim()).filter(Boolean),
+      VERSION_SCHEMA, SETTINGS_SCHEMA, ...SNAPSHOT_SCHEMA.split(';').map(sql => sql.trim()).filter(Boolean),
       'CREATE INDEX IF NOT EXISTS idx_snapshots_time ON snapshots(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_snapshots_route_time ON snapshots(route_code, timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_snapshots_vehicle_time ON snapshots(vehplate, timestamp DESC, id DESC)',
       'CREATE INDEX IF NOT EXISTS idx_poll_batches_time ON poll_batches(timestamp DESC, id DESC)',
-      ...Object.entries({ polling_interval_ms: '600000', last_polled_at: '0', fms_token: '' }).map(([key, value]) => ({
+      ...Object.entries({ last_polled_at: '0', fms_token: '' }).map(([key, value]) => ({
         sql: 'INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING', args: [key, value]
       })),
-      "DELETE FROM settings WHERE key = 'mode'", 'PRAGMA user_version = 4'
+      {
+        sql: 'INSERT INTO bus_schema_version(id, version) VALUES (1, ?) ON CONFLICT(id) DO NOTHING',
+        args: [SCHEMA_VERSION]
+      }
     ], 'write');
   }
 

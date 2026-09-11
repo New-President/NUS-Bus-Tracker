@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
@@ -8,18 +8,16 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createClient } from '@libsql/client';
 import './no_provider_network.js';
+import { createTestDatabase } from './database_fixture.js';
 
-process.env.BUS_DB_PATH = ':memory:';
 for (const key of ['TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN', 'FMS_TOKEN', 'VERCEL', 'AWS_LAMBDA_FUNCTION_NAME']) delete process.env[key];
-const { BusDatabase, dbInstance } = await import('../src/db.js');
+const { createDatabase, getDatabase, DatabaseConfigurationError } = await import('../src/db.js');
 const { RemoteBusDatabase } = await import('../src/remote_db.js');
 const { BusCollector } = await import('../src/collector.js');
 const { createRequestHandler } = await import('../src/server.js');
-after(() => dbInstance.close());
 
 const DAY_MS = 86400000;
 const SINGAPORE_OFFSET = 8 * 3600000;
-const plain = value => JSON.parse(JSON.stringify(value));
 const bus = (vehplate = 'OBSERVED1', extra = {}) => ({ route_code: 'A1', vehplate, ...extra });
 
 // The libSQL native Windows driver retains file handles after close(). Use the
@@ -52,7 +50,7 @@ function windowsSqliteClient(url) {
   };
 }
 
-function durableDatabase(t) {
+function durableDatabase(t, wrapClient = client => client) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nus-remote-db-test-'));
   const url = pathToFileURL(path.join(directory, 'observations.db')).href;
   const clients = new Set();
@@ -64,12 +62,66 @@ function durableDatabase(t) {
     fs.rmdirSync(directory);
   });
   function open() {
-    const client = process.platform === 'win32' ? windowsSqliteClient(url) : createClient({ url });
+    const client = wrapClient(process.platform === 'win32' ? windowsSqliteClient(url) : createClient({ url }));
     clients.add(client);
     return { client, db: new RemoteBusDatabase({ client }) };
   }
   return { open, ...open() };
 }
+
+// Local SQLite allows this PRAGMA write, while the hosted Turso service rejects
+// it. Enforce that boundary over a real database to cover cloud bootstrap SQL.
+function tursoCloudClient(client) {
+  function check(statement) {
+    const sql = typeof statement === 'string' ? statement : statement.sql;
+    if (/^\s*PRAGMA\s+(?:\w+\.)?user_version\s*(?:=|\()/i.test(sql)) {
+      throw new Error('SQL_PARSE_ERROR: SQL not allowed statement: PRAGMA user_version');
+    }
+  }
+  return {
+    async execute(statement) { check(statement); return client.execute(statement); },
+    async batch(statements, mode) { statements.forEach(check); return client.batch(statements, mode); },
+    close() { client.close(); }
+  };
+}
+
+test('Turso Cloud bootstrap, polling and cold starts work with read-only user_version', async t => {
+  const first = durableDatabase(t, tursoCloudClient);
+  await assert.rejects(first.client.execute('PRAGMA user_version = 4'), /SQL not allowed/);
+  const timestamp = Date.now() - 1000;
+  await first.db.setSetting('fms_token', 'cloud-test-token');
+  await first.db.recordPoll([bus('CLOUD-FIRST')], timestamp - 1000);
+  assert.equal((await first.client.execute('PRAGMA user_version')).rows[0].user_version, 0);
+  first.db.close();
+
+  const restarted = first.open();
+  assert.equal(await restarted.db.getSetting('fms_token'), 'cloud-test-token');
+  assert.equal((await restarted.db.getLatestPoll(timestamp)).records_count, 1);
+  await restarted.db.recordPoll([bus('CLOUD-RESTARTED')], timestamp);
+  const second = first.open();
+  assert.equal(await second.db.getTotalSnapshotsCount(), 2);
+  assert.equal(await second.db.getSetting('last_polled_at'), String(timestamp));
+  assert.deepEqual((await second.db.getLatestLiveBuses(timestamp)).map(row => row.vehplate), ['CLOUD-RESTARTED']);
+  assert.equal((await second.client.execute('PRAGMA user_version')).rows[0].user_version, 0);
+});
+
+test('a compatible legacy version 4 database is adopted without losing observations or settings', async t => {
+  const first = durableDatabase(t);
+  const timestamp = Date.now() - 1000;
+  await first.db.setSetting('fms_token', 'legacy-test-token');
+  await first.db.recordPoll([bus('LEGACY')], timestamp);
+  // Emulate an import created by the previous version of the application.
+  await first.client.batch(['DROP TABLE bus_schema_version', 'PRAGMA user_version = 4'], 'write');
+  first.db.close();
+
+  const imported = first.open();
+  assert.equal(await imported.db.getSetting('fms_token'), 'legacy-test-token');
+  assert.equal(await imported.db.getTotalSnapshotsCount(), 1);
+  assert.equal((await imported.db.getLatestLiveBuses(timestamp))[0].vehplate, 'LEGACY');
+  assert.equal((await imported.client.execute('SELECT version FROM bus_schema_version WHERE id = 1')).rows[0].version, 4);
+  const reopened = first.open();
+  assert.equal(await reopened.db.getSetting('last_polled_at'), String(timestamp));
+});
 
 test('independent remote database instances share settings and observations across restarts', async t => {
   const first = durableDatabase(t);
@@ -92,7 +144,8 @@ test('independent remote database instances share settings and observations acro
 });
 
 test('remote duplicate plates roll back the complete batch and last successful poll time', async t => {
-  const { db, client } = durableDatabase(t);
+  const db = createTestDatabase(t);
+  const { client } = db;
   const timestamp = Date.now() - 1000;
   await db.recordPoll([bus('EXISTING')], timestamp - 1000);
   const before = await db.getLatestPoll(timestamp);
@@ -110,7 +163,7 @@ test('remote duplicate plates roll back the complete batch and last successful p
 });
 
 test('a remote empty poll clears the active fleet while retaining historical observations', async t => {
-  const { db } = durableDatabase(t);
+  const db = createTestDatabase(t);
   const timestamp = Date.now() - 1000;
   await db.recordPoll([bus('DEPARTED', { lat: 1.3, lng: 103.8 })], timestamp - 1000);
   const result = await db.recordPoll([], timestamp, {
@@ -130,10 +183,8 @@ test('a remote empty poll clears the active fleet while retaining historical obs
   assert.deepEqual(emptySource.monitoredStops, ['UTOWN']);
 });
 
-test('remote provenance, Singapore dates, unknown measurements and analytics match local SQLite', async t => {
-  const { db } = durableDatabase(t);
-  const local = new BusDatabase(':memory:');
-  t.after(() => local.close());
+test('remote observations preserve provenance, Singapore dates and measured analytics', async t => {
+  const db = createTestDatabase(t);
   const midnight = Math.floor((Date.now() + SINGAPORE_OFFSET) / DAY_MS) * DAY_MS - SINGAPORE_OFFSET - DAY_MS;
   const fixtures = [
     { timestamp: midnight - 60000, records: [bus('UNKNOWN')], metadata: {} },
@@ -143,37 +194,60 @@ test('remote provenance, Singapore dates, unknown measurements and analytics mat
       metadata: { dataProvider: 'community', coverage: 'stop-arrivals', monitoredStops: ['UTOWN', 'KR-MRT', 'UTOWN'] } },
     { timestamp: midnight + 25 * 60000, records: [], metadata: { dataProvider: 'univus', coverage: 'route-fleet' } }
   ];
-  for (const { records, timestamp, metadata } of fixtures) {
-    const actual = await db.recordPoll(records, timestamp, metadata);
-    assert.deepEqual(plain(actual), plain(local.recordPoll(records, timestamp, metadata)));
+  for (const [index, { records, timestamp, metadata }] of fixtures.entries()) {
+    assert.deepEqual(await db.recordPoll(records, timestamp, metadata), {
+      batchId: index + 1, recordsCount: records.length, timestamp
+    });
   }
   const end = midnight + 30 * 60000;
-  for (const [method, args] of [
-    ['getLatestPoll', [end]], ['getLatestLiveBuses', [midnight + 16 * 60000]],
-    ['getAllFleetStatus', [end]], ['getAllFleetStatus', [end + 20 * 60000]],
-    ['getTotalSnapshotsCount', []], ['getDataSources', [midnight - 60000, end]],
-    ['get24HourHistory', [midnight - 60000, end]], ['getAvailableDates', []],
-    ['getCommuteOptimizationAnalytics', [midnight - 60000, end]],
-    ['getHourlyAnalytics', [midnight - 60000, end]], ['getExportRows', [2]]
-  ]) {
-    assert.deepEqual(plain(await db[method](...args)), plain(local[method](...args)), method);
-  }
+  const latestPoll = await db.getLatestPoll(end);
+  assert.equal(latestPoll.id, 4);
+  assert.equal(latestPoll.records_count, 0);
+  assert.equal(latestPoll.source_provider, 'univus');
+  const live = await db.getLatestLiveBuses(midnight + 16 * 60000);
+  assert.deepEqual(live.map(row => row.vehplate), ['UNKNOWN', 'MEASURED']);
+  assert.ok(live.every(row => row.source_provider === 'community' && row.data_coverage === 'stop-arrivals'));
+  assert.ok(live.every(row => row.monitored_stops === '["KR-MRT","UTOWN"]'));
+  const zero = (await db.getLatestLiveBuses(midnight + 5 * 60000))[0];
+  assert.equal(zero.source_provider, 'univus');
+  for (const field of ['ridership', 'occupancy', 'speed', 'lat', 'lng']) assert.equal(zero[field], 0, field);
+  const fleet = await db.getAllFleetStatus(end);
+  assert.equal(fleet.length, 3);
+  assert.ok(fleet.every(row => row.status === 'inactive'));
+  assert.ok((await db.getAllFleetStatus(end + 20 * 60000)).every(row => row.status === 'stale'));
+  assert.equal(await db.getTotalSnapshotsCount(), 4);
+  const sources = await db.getDataSources(midnight - 60000, end);
+  assert.deepEqual(sources.map(source => [source.dataProvider, source.batchCount, source.recordsCount]), [
+    ['community', 1, 2], ['connectx', 1, 1], ['univus', 2, 1]
+  ]);
   const dates = await db.getAvailableDates();
   assert.deepEqual(dates, [midnight, midnight - DAY_MS].map(value => new Date(value + SINGAPORE_OFFSET).toISOString().slice(0, 10)));
   const history = await db.get24HourHistory(midnight - 60000, end);
-  assert.equal(history.campusData[0].avg_occupancy_pct, null);
-  assert.equal(history.campusData[1].avg_occupancy_pct, 0);
-  assert.equal(history.campusData[1].time_str, '00:00');
-  const deleted = await db.clearAllSnapshots();
-  assert.equal(deleted, local.clearAllSnapshots());
-  assert.equal(deleted, 4);
+  assert.deepEqual(history.campusData.map(row => row.time_str), ['23:50', '00:00', '00:10']);
+  assert.deepEqual(history.campusData.map(row => row.avg_occupancy_pct), [null, 0, 80]);
+  assert.deepEqual(history.campusData.map(row => row.sample_count), [1, 1, 2]);
+  const analytics = await db.getCommuteOptimizationAnalytics(midnight - 60000, end);
+  assert.deepEqual(await db.getHourlyAnalytics(midnight - 60000, end), analytics);
+  assert.equal(analytics.timezone, 'Asia/Singapore');
+  assert.deepEqual(analytics.campusHourly.map(row => row.hour), [0, 23]);
+  assert.equal(analytics.campusHourly[0].sample_count, 3);
+  assert.equal(analytics.campusHourly[0].occupancy_sample_count, 2);
+  assert.equal(analytics.campusHourly[0].avg_occupancy_pct, 40);
+  assert.equal(analytics.campusHourly[0].avg_ridership, 20);
+  assert.equal(analytics.campusHourly[1].avg_occupancy_pct, null);
+  assert.deepEqual(analytics.bestWindows.map(row => row.hour), [0]);
+  assert.deepEqual(analytics.busiestHours.map(row => row.hour), [0]);
+  const exported = await db.getExportRows(2);
+  assert.deepEqual(exported.map(row => row.vehplate), ['UNKNOWN', 'MEASURED']);
+  assert.ok(exported.every(row => row.source_provider === 'community'));
+  assert.equal(await db.clearAllSnapshots(), 4);
   assert.equal(await db.getLatestPoll(), null);
   assert.deepEqual(await db.getAvailableDates(), []);
   assert.equal(await db.getSetting('last_polled_at'), '0');
 });
 
 test('a transient remote schema initialization failure can recover on the next request', async t => {
-  const { client } = durableDatabase(t);
+  const { client } = createTestDatabase(t);
   let failOnce = true;
   const interruptedClient = new Proxy(client, {
     get(target, property) {
@@ -196,23 +270,40 @@ test('a transient remote schema initialization failure can recover on the next r
 });
 
 test('the actual libSQL SDK executes remote SQL and rolls back a failed poll', async t => {
-  const db = new RemoteBusDatabase({ client: createClient({ url: 'file::memory:' }) });
-  const local = new BusDatabase(':memory:');
-  t.after(() => { db.close(); local.close(); });
+  const db = createTestDatabase(t);
   const timestamp = Date.now() - 1000;
   const records = [bus('SDK-UNKNOWN'), bus('SDK-ZERO', { occupancy: 0, ridership: 0 })];
   const metadata = { dataProvider: 'univus', coverage: 'route-fleet' };
   await db.recordPoll(records, timestamp, metadata);
-  local.recordPoll(records, timestamp, metadata);
   await assert.rejects(db.recordPoll([bus('DUPLICATE'), bus('DUPLICATE')], timestamp), /UNIQUE|duplicate/i);
-  for (const [method, args] of [
-    ['getLatestPoll', [timestamp]], ['getLatestLiveBuses', [timestamp]], ['getAllFleetStatus', [timestamp]],
-    ['getTotalSnapshotsCount', []], ['getDataSources', [0, timestamp]],
-    ['get24HourHistory', [timestamp - 600000, timestamp]], ['getAvailableDates', []],
-    ['getHourlyAnalytics', [timestamp - 600000, timestamp]], ['getExportRows', []]
-  ]) {
-    assert.deepEqual(plain(await db[method](...args)), plain(local[method](...args)), method);
-  }
+  const poll = await db.getLatestPoll(timestamp);
+  assert.equal(poll.id, 1);
+  assert.equal(poll.records_count, 2);
+  assert.equal(poll.source_provider, 'univus');
+  const live = await db.getLatestLiveBuses(timestamp);
+  assert.deepEqual(live.map(row => row.vehplate), ['SDK-UNKNOWN', 'SDK-ZERO']);
+  assert.equal(live[0].occupancy, null);
+  assert.equal(live[0].ridership, null);
+  assert.equal(live[1].occupancy, 0);
+  assert.equal(live[1].ridership, 0);
+  assert.ok((await db.getAllFleetStatus(timestamp)).every(row => row.status === 'active'));
+  assert.equal(await db.getTotalSnapshotsCount(), 2);
+  assert.deepEqual(await db.getDataSources(0, timestamp), [{
+    dataProvider: 'univus', coverage: 'route-fleet', monitoredStops: [],
+    batchCount: 1, recordsCount: 2, firstObservedAt: timestamp, lastObservedAt: timestamp
+  }]);
+  const history = await db.get24HourHistory(timestamp - 600000, timestamp);
+  assert.equal(history.campusData.length, 1);
+  assert.equal(history.campusData[0].sample_count, 2);
+  assert.equal(history.campusData[0].occupancy_sample_count, 1);
+  assert.equal(history.campusData[0].avg_occupancy_pct, 0);
+  assert.deepEqual(await db.getAvailableDates(), [new Date(timestamp + SINGAPORE_OFFSET).toISOString().slice(0, 10)]);
+  const analytics = await db.getHourlyAnalytics(timestamp - 600000, timestamp);
+  assert.equal(analytics.campusHourly.length, 1);
+  assert.equal(analytics.campusHourly[0].avg_occupancy_pct, 0);
+  assert.equal(analytics.campusHourly[0].avg_ridership, 0);
+  assert.equal(analytics.bestWindows.length, 1);
+  assert.deepEqual((await db.getExportRows()).map(row => row.vehplate), ['SDK-ZERO', 'SDK-UNKNOWN']);
   assert.equal(await db.getSetting('last_polled_at'), String(timestamp));
   await db.recordPoll([], timestamp);
   assert.deepEqual(await db.getLatestLiveBuses(timestamp), []);
@@ -232,8 +323,44 @@ test('remote configuration rejects incomplete or insecure URLs before any networ
   }
 });
 
+test('the application requires complete Turso configuration and rejects insecure URLs', () => {
+  for (const env of [
+    {}, { TURSO_DATABASE_URL: 'libsql://example.turso.io' }, { TURSO_AUTH_TOKEN: 'test-token' },
+    { TURSO_DATABASE_URL: ' ', TURSO_AUTH_TOKEN: 'test-token' },
+    { TURSO_DATABASE_URL: 'libsql://example.turso.io', TURSO_AUTH_TOKEN: ' ' },
+    { TURSO_DATABASE_URL: 'http://example.turso.io', TURSO_AUTH_TOKEN: 'test-token' },
+    { TURSO_DATABASE_URL: 'file:observations.db', TURSO_AUTH_TOKEN: 'test-token' }
+  ]) {
+    assert.throws(() => createDatabase(env), error => {
+      assert.ok(error instanceof DatabaseConfigurationError);
+      assert.match(error.message, /TURSO_DATABASE_URL/);
+      assert.doesNotMatch(error.message, /test-token/);
+      return true;
+    });
+  }
+});
+
+test('application clients are lazy, shared per environment and replaced after closing', t => {
+  const env = { TURSO_DATABASE_URL: 'libsql://example.turso.io', TURSO_AUTH_TOKEN: 'test-token' };
+  const db = getDatabase(env);
+  t.after(() => db.close());
+  assert.ok(db instanceof RemoteBusDatabase);
+  assert.equal(db.initialization, null);
+  assert.equal(getDatabase(env), db);
+  const separate = getDatabase({ ...env });
+  t.after(() => separate.close());
+  assert.notEqual(separate, db);
+  assert.equal(separate.initialization, null);
+  db.close();
+  const reopened = getDatabase(env);
+  t.after(() => reopened.close());
+  assert.notEqual(reopened, db);
+  assert.equal(reopened.closed, false);
+  assert.equal(reopened.initialization, null);
+});
+
 test('remote initialization is lazy and concurrent first reads share one bootstrap', async t => {
-  const { client } = durableDatabase(t);
+  const { client } = createTestDatabase(t);
   let batches = 0;
   const trackedClient = {
     execute: statement => client.execute(statement),
@@ -250,7 +377,8 @@ test('remote initialization is lazy and concurrent first reads share one bootstr
 
 test('remote initialization refuses unsupported schemas without changing their contents', async t => {
   for (const version of [3, 5]) {
-    const { db, client } = durableDatabase(t);
+    const db = createTestDatabase(t);
+    const { client } = db;
     await client.execute('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     await client.execute("INSERT INTO settings(key, value) VALUES ('retained', 'existing data')");
     await client.execute(`PRAGMA user_version = ${version}`);
@@ -258,6 +386,35 @@ test('remote initialization refuses unsupported schemas without changing their c
     assert.equal((await client.execute("SELECT value FROM settings WHERE key = 'retained'")).rows[0].value, 'existing data');
     assert.equal((await client.execute('PRAGMA user_version')).rows[0].user_version, version);
     assert.equal((await client.execute('SELECT COUNT(*) AS count FROM settings')).rows[0].count, 1);
+  }
+});
+
+test('table-based schema versions reject older and newer databases without modifying stored data', async t => {
+  for (const version of [3, 5]) {
+    const original = createTestDatabase(t);
+    await original.setSetting('retained', 'existing data');
+    await original.recordPoll([bus('RETAINED')], Date.now() - 1000);
+    await original.client.execute({ sql: 'UPDATE bus_schema_version SET version = ? WHERE id = 1', args: [version] });
+    const reopened = new RemoteBusDatabase({ client: original.client });
+    await assert.rejects(reopened.getSetting('retained'), /schema|newer/);
+    assert.equal((await original.client.execute('SELECT version FROM bus_schema_version')).rows[0].version, version);
+    assert.equal((await original.client.execute("SELECT value FROM settings WHERE key = 'retained'")).rows[0].value, 'existing data');
+    assert.equal((await original.client.execute('SELECT COUNT(*) AS count FROM snapshots')).rows[0].count, 1);
+  }
+});
+
+test('partial schemas and missing version metadata are refused without repair writes', async t => {
+  for (const damage of ['DROP TABLE snapshots', 'DELETE FROM bus_schema_version']) {
+    const original = createTestDatabase(t);
+    await original.setSetting('retained', 'existing data');
+    await original.client.execute(damage);
+    const before = await original.client.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name");
+    const versionBefore = await original.client.execute('SELECT id, version FROM bus_schema_version');
+    const reopened = new RemoteBusDatabase({ client: original.client });
+    await assert.rejects(reopened.getSetting('retained'), /schema/);
+    assert.deepEqual((await original.client.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name")).rows, before.rows);
+    assert.deepEqual((await original.client.execute('SELECT id, version FROM bus_schema_version')).rows, versionBefore.rows);
+    assert.equal((await original.client.execute("SELECT value FROM settings WHERE key = 'retained'")).rows[0].value, 'existing data');
   }
 });
 

@@ -1,4 +1,4 @@
-﻿import { spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -15,9 +15,9 @@ const suites = [
   'tests/test_html_contract.js'
 ];
 
-// Each suite runs separately with an in-memory database and no inherited
-// provider credentials, so npm test cannot alter application data.
-const env = { ...process.env, BUS_DB_PATH: ':memory:', FMS_ROUTES: 'A1,A2,D1,D2,E,K', TZ: 'UTC' };
+// Suites inject isolated SQL clients and never inherit cloud/provider
+// credentials, so npm test cannot access application data.
+const env = { ...process.env, FMS_ROUTES: 'A1,A2,D1,D2,E,K', TZ: 'UTC' };
 for (const key of ['FMS_TOKEN', 'BUS_PROVIDER', 'BUS_STOPS', 'ADMIN_TOKEN', 'CRON_SECRET', 'VERCEL', 'AWS_LAMBDA_FUNCTION_NAME', 'TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN']) {
   delete env[key];
 }

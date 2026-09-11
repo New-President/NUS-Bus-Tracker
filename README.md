@@ -1,17 +1,23 @@
 # NUS Shuttle Bus Crowd Tracker
 
-A Node.js application that queries uNivUS directly for real NUS shuttle positions and passenger loads, stores observations in local SQLite or shared Turso storage, and shows recorded crowd patterns. The backend uses Node modules and the libSQL HTTP client; the map uses Leaflet and external map tiles.
+A Node.js application that queries uNivUS directly for real NUS shuttle positions and passenger loads, stores observations in shared Turso storage, and shows recorded crowd patterns. The backend uses Node modules and the libSQL HTTP client; the map uses Leaflet and external map tiles.
 
 ## Run locally
 
-Use Node.js 24 (also selected for Vercel). Install dependencies before starting:
+Use Node.js 24 (also selected for Vercel) and a Turso database. Install dependencies, create a local environment file, and fill in its values:
 
 ```powershell
 npm.cmd ci
+Copy-Item .env.example .env
+# Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in .env before starting.
 npm.cmd start
 ```
 
-Open http://127.0.0.1:3000. Choose **Poll Now** to collect immediately. Default automatic mode uses the official uNivUS web application's guest session; no account login, API key, or manually supplied FMS token is required. Collection runs every ten minutes while the server is running.
+Both Turso variables are required locally and on Vercel. Use a separate development database for local work. `npm start` loads `.env` automatically; variables already set in your shell take precedence.
+
+For local use at `http://127.0.0.1:3000`, leave `ADMIN_TOKEN` and `CRON_SECRET` blank unless you intentionally configure them. Any nonempty `ADMIN_TOKEN` requires that same value in **Data & API Settings > Dashboard admin token** before manual collection, even locally. Set real random secrets in Vercel. Restart the server after changing `.env`.
+
+Open http://127.0.0.1:3000. Choose **Poll Now** to collect immediately. Default automatic mode uses the official uNivUS web application's guest session; no NUS account login, bus API key, or manually supplied FMS token is required. Collection runs every ten minutes while the server is running.
 
 The session is renewed after 23 hours 45 minutes, or earlier if a returned cookie expires. The fifteen-minute margin allows a ten-minute poller to renew within the daily cycle. The dashboard shows the planned renewal time; it does not invent an expiry for opaque session cookies. A rejected session triggers one new guest login and retry. Concurrent routes share authentication.
 
@@ -50,14 +56,13 @@ Guest cookies are never written to the database, returned by dashboard APIs, inc
 | `FMS_TOKEN` | Optional manual ConnectX override in `auto`/`connectx` mode. Leave blank for automatic uNivUS sessions. |
 | `UNIVUS_HTD_API`, `UNIVUS_APP_API` | Optional public-app identifier overrides for the older ConnectX authentication flow only. |
 | `UNIVUS_APP_VERSION` | Older ConnectX guest client version; default `2.56.0`. |
-| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Optional shared durable Turso database URL and read/write token. Configure both on Vercel to retain history across instances and deployments. |
-| `BUS_DB_PATH` | Used when Turso variables are absent. SQLite path; default `data/bus_tracker.db` relative to the project. `:memory:` is useful for isolated checks. |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Required Turso database URL and read/write token for both local and hosted operation. |
 | `HOST` | Local server bind address; default `127.0.0.1`. |
 | `PORT` | Local HTTP port; default `3000`. |
 | `ADMIN_TOKEN` | Bearer credential for polling, settings, and history deletion. Required for remote administrative access. |
 | `CRON_SECRET` | Separate bearer credential required for `GET /api/cron`. |
 
-The app reads process environment variables; it does not load `.env` files automatically. The optional administrator token entered in the dashboard stays in page memory. Manual FMS tokens saved through Settings reside in the selected database; keep database access private. Read-only telemetry endpoints are public to anyone who can reach the server. Local writes without `ADMIN_TOKEN` require loopback, a localhost Host header, and the same origin. Hosted writes require `ADMIN_TOKEN`.
+`npm start` loads `.env` when present and preserves variables already set in the process environment. On Vercel, configure variables in project settings. The optional administrator token entered in the dashboard stays in page memory. Manual FMS tokens saved through Settings reside in the selected database; keep database access private. Read-only telemetry endpoints are public to anyone who can reach the server. Local writes without `ADMIN_TOKEN` require loopback, a localhost Host header, and the same origin. Hosted writes require `ADMIN_TOKEN`.
 
 The older [documented guest/FMS flow](https://suibianp.github.io/nus-nextbus-new-api/) remains available in explicit `connectx` mode: get-access-token, buswidget initialization, then `nextbus_token2` for ConnectX requests. Its documented ActiveBus query returned error 4 during verification; the default integration now queries uNivUS directly.
 
@@ -69,7 +74,7 @@ npm.cmd run build
 npm.cmd run verify-live -- --direct
 ```
 
-Tests use isolated databases and controlled HTTP responses, never your credentials or the live provider. They cover session creation and renewal, concurrent re-authentication, cookie boundaries, missing measurements, stale data, atomic batches, database migrations, Singapore dates, API validation, CSV escaping, administrative access, serverless behavior, and frontend rendering.
+Tests use isolated databases and controlled HTTP responses, never your credentials or the live provider. They cover session creation and renewal, concurrent re-authentication, cookie boundaries, missing measurements, stale data, atomic batches, Turso configuration and persistence, Singapore dates, API validation, CSV escaping, administrative access, serverless behavior, and frontend rendering.
 
 `verify-live` exercises one configured route using the selected provider and prints safe source/coverage/measurement diagnostics without database writes. `--direct` forces uNivUS without a fallback; `--connectx` checks the older integration. Session renewal timestamps are planned renewal times, not verified server-side cookie expiry times.
 
@@ -82,13 +87,13 @@ Tests use isolated databases and controlled HTTP responses, never your credentia
 - `src/provider_config.js`: source selection and coverage descriptions.
 - `src/provider_http.js`: bounded JSON requests and sanitized errors.
 - `src/collector.js`: collection, scheduling, provider selection, and diagnostics.
-- `src/db.js`: local SQLite storage, safe upgrades, and selection of the configured database.
+- `src/db.js`: Turso connection creation and configuration validation.
 - `src/remote_db.js` and `src/db_shared.js`: durable Turso storage, shared schema and validation, atomic batches, and analytics.
 - `src/routes.js`: configured route identifiers and display colors.
 - `src/server.js` and `api/index.js`: local and serverless API handlers.
 - `public/`: dashboard, charts, map, and styles.
 - `tests/`: isolated regression suites.
 
-Database upgrades retain existing identifiable observations and provider provenance. Older records without proven live provenance are removed during the legacy upgrade; ambiguous default measurements become unknown. No history is generated at startup.
+The app creates its tables in a new Turso database and accepts the current schema version. Unsupported existing schemas are rejected without modifying their data. No history is generated at startup.
 
-See [VERCEL.md](VERCEL.md) for step-by-step Vercel deployment. Configure Turso for durable history and use an external scheduler or Vercel Pro cron for ten-minute collection. The default configuration supports Hobby with manual polling; without Turso, hosted storage is temporary.
+See [VERCEL.md](VERCEL.md) for step-by-step Vercel deployment. Configure Turso for durable history and use an external scheduler or Vercel Pro cron for ten-minute collection. The default configuration supports Hobby with manual polling. Turso is required; there is no local database fallback.

@@ -1,14 +1,17 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import test from 'node:test';
+import test, { after } from 'node:test';
+import { createTestDatabase } from './database_fixture.js';
 import './no_provider_network.js';
 
-process.env.BUS_DB_PATH = ':memory:';
 process.env.VERCEL = '1';
-for (const key of ['FMS_TOKEN', 'ADMIN_TOKEN', 'CRON_SECRET', 'AWS_LAMBDA_FUNCTION_NAME', 'BUS_PROVIDER', 'BUS_STOPS']) delete process.env[key];
-const { default: handler } = await import('../api/index.js');
-const { dbInstance: db } = await import('../src/db.js');
-const { collectorInstance: collector } = await import('../src/collector.js');
+for (const key of ['FMS_TOKEN', 'ADMIN_TOKEN', 'CRON_SECRET', 'AWS_LAMBDA_FUNCTION_NAME', 'BUS_PROVIDER', 'BUS_STOPS', 'TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN']) delete process.env[key];
+const { default: defaultHandler, createHandler } = await import('../api/index.js');
+const { BusCollector } = await import('../src/collector.js');
+const db = createTestDatabase();
+const collector = new BusCollector(db);
+const handler = createHandler({ db, collector, env: process.env });
+after(() => db.close());
 let univusCalls = 0;
 let guestCalls = 0;
 let sessionRenewAt = null;
@@ -73,13 +76,13 @@ class Response extends EventEmitter {
   }
 }
 
-async function invoke(url, options = {}) {
+async function invoke(url, options = {}, target = handler) {
   const req = new Request(url, options);
   const res = new Response();
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Serverless handler did not finish')), 2000);
     res.once('finish', () => { clearTimeout(timer); resolve(); });
-    Promise.resolve(handler(req, res)).catch(error => { clearTimeout(timer); reject(error); });
+    Promise.resolve(target(req, res)).catch(error => { clearTimeout(timer); reject(error); });
   });
   let json;
   try { json = JSON.parse(res.data); } catch {}
@@ -100,7 +103,7 @@ test('serverless public reads do not contact the provider or create data', async
   assert.equal(called, false);
   assert.equal(univusCalls, 0);
   assert.equal(guestCalls, 0);
-  assert.equal(db.getTotalSnapshotsCount(), 0);
+  assert.equal(await db.getTotalSnapshotsCount(), 0);
 });
 
 test('serverless cron requires a configured secret and rejects incorrect authorization', async () => {
@@ -140,7 +143,7 @@ test('serverless authorization cannot be bypassed with forwarded localhost heade
     headers: { host: 'localhost', 'x-forwarded-host': 'localhost', 'x-forwarded-for': '127.0.0.1' }
   });
   assert.ok([401, 403, 503].includes(res.status));
-  assert.notEqual(db.getSetting('fms_token'), 'rejected-token');
+  assert.notEqual(await db.getSetting('fms_token'), 'rejected-token');
 });
 
 test('serverless pre-parsed settings body is validated and authenticated', async () => {
@@ -152,12 +155,12 @@ test('serverless pre-parsed settings body is validated and authenticated', async
   assert.equal(saved.status, 200);
   assert.equal(saved.json.success, true);
   assert.equal(saved.data.includes('stored-provider-token'), false);
-  assert.equal(db.getSetting('fms_token'), 'stored-provider-token');
+  assert.equal(await db.getSetting('fms_token'), 'stored-provider-token');
   for (const body of ['{broken', null, [], { fms_token: 1 }]) {
     const res = await invoke('/api/settings', { method: 'POST', headers, body });
     assert.equal(res.status, 400);
   }
-  assert.equal(db.getSetting('fms_token'), 'stored-provider-token');
+  assert.equal(await db.getSetting('fms_token'), 'stored-provider-token');
   delete process.env.ADMIN_TOKEN;
 });
 
@@ -168,4 +171,10 @@ test('serverless errors and unknown routes return usable JSON responses', async 
   const unknown = await invoke('/api/missing');
   assert.equal(unknown.status, 404);
   assert.equal(typeof unknown.json.error, 'string');
+});
+
+test('default Vercel handler reports missing Turso configuration without a local fallback', async () => {
+  const res = await invoke('/api/status', {}, defaultHandler);
+  assert.equal(res.status, 503);
+  assert.match(res.json.error, /TURSO_DATABASE_URL.*TURSO_AUTH_TOKEN/);
 });

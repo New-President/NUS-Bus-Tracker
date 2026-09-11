@@ -4,7 +4,7 @@
   "description": "NUS Shuttle Bus Crowd Tracker & Commute Optimizer",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
     "build": "node scripts/check.js",
     "check": "node scripts/check.js",
     "test": "node tests/run_all_tests.js",

@@ -1,17 +1,16 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import './no_provider_network.js';
 
-process.env.BUS_DB_PATH = ':memory:';
 for (const key of ['FMS_TOKEN', 'ADMIN_TOKEN', 'CRON_SECRET', 'VERCEL', 'AWS_LAMBDA_FUNCTION_NAME', 'BUS_PROVIDER', 'BUS_STOPS']) delete process.env[key];
 const { createRequestHandler } = await import('../src/server.js');
-const { BusDatabase } = await import('../src/db.js');
+import { createTestDatabase } from './database_fixture.js';
 const { BusCollector } = await import('../src/collector.js');
 const { normalizeBus } = await import('../src/api_client.js');
 
 async function fixture(t, env = {}, observations = []) {
-  const db = new BusDatabase(':memory:');
+  const db = createTestDatabase();
   let calls = 0;
   let guestCalls = 0;
   let sessionRenewAt = null;
@@ -108,7 +107,7 @@ test('public dashboard reads remain empty until actual observations arrive and n
   assert.deepEqual(analytics.busiestHours, []);
   assert.equal(calls(), 0);
   assert.equal(guestCalls(), 0);
-  assert.equal(db.getTotalSnapshotsCount(), 0);
+  assert.equal(await db.getTotalSnapshotsCount(), 0);
 });
 
 test('static assets are served and encoded path traversal cannot read repository files', async t => {
@@ -152,12 +151,12 @@ test('on-demand collection reports guest authentication and upstream failures ac
   assert.equal(unavailable.status, 502);
   assert.equal(unavailable.json.success, false);
   assert.equal(calls(), 0);
-  db.setSetting('fms_token', 'provider-token');
+  await db.setSetting('fms_token', 'provider-token');
   collector.fetchBuses = async () => { throw new Error('Provider unavailable'); };
   const failure = await request('/api/poll-now', { method: 'POST' });
   assert.equal(failure.status, 502);
   assert.equal(failure.json.success, false);
-  assert.equal(db.getTotalSnapshotsCount(), 0);
+  assert.equal(await db.getTotalSnapshotsCount(), 0);
   collector.fetchBuses = async () => [];
   const empty = await request('/api/poll-now', { method: 'POST' });
   assert.equal(empty.status, 200);
@@ -180,7 +179,7 @@ test('on-demand collection works with automatic guest authentication and no save
   assert.equal(result.json.dataProvider, 'univus');
   assert.equal(calls(), 1);
   assert.equal(guestCalls(), 1);
-  assert.equal(db.getSetting('fms_token'), '');
+  assert.equal(await db.getSetting('fms_token'), '');
 });
 
 test('automatic uNivUS collection exposes measured GPS and renewal metadata with API and CSV provenance but no credentials', async t => {
@@ -252,7 +251,7 @@ test('settings accept only validated credentials and never echo stored secrets',
   const saved = await request('/api/settings', { method: 'POST', body: { fms_token: token } });
   assert.equal(saved.status, 200);
   assert.equal(saved.json.success, true);
-  assert.equal(db.getSetting('fms_token'), token);
+  assert.equal(await db.getSetting('fms_token'), token);
   assert.equal(saved.data.includes(token), false);
   assert.equal((await request('/api/status')).data.includes(token), false);
 });
@@ -261,13 +260,13 @@ test('environment credentials cannot be overwritten through dashboard settings',
   const { request, db } = await fixture(t, { FMS_TOKEN: 'deployment-token' });
   const res = await request('/api/settings', { method: 'POST', body: { fms_token: 'replacement' } });
   assert.equal(res.status, 409);
-  assert.notEqual(db.getSetting('fms_token'), 'replacement');
+  assert.notEqual(await db.getSetting('fms_token'), 'replacement');
   assert.equal(res.data.includes('deployment-token'), false);
 });
 
 test('replacing a previously working token marks the new connection pending and preserves history', async t => {
   const { request, db, collector } = await fixture(t);
-  db.setSetting('fms_token', 'old-provider-token');
+  await db.setSetting('fms_token', 'old-provider-token');
   collector.fetchBuses = async () => [normalizeBus({ vehplate: 'TEST-BEFORE-REPLACEMENT' }, 'A1', Date.now())];
   const collected = await request('/api/poll-now', { method: 'POST' });
   assert.equal(collected.status, 200);
@@ -278,8 +277,8 @@ test('replacing a previously working token marks the new connection pending and 
   const after = await request('/api/status');
   assert.equal(after.json.connectionState, 'pending');
   assert.equal(after.json.lastPolledAt, before.json.lastPolledAt);
-  assert.equal(db.getTotalSnapshotsCount(), 1);
-  assert.equal(db.getSetting('fms_token'), 'new-provider-token');
+  assert.equal(await db.getTotalSnapshotsCount(), 1);
+  assert.equal(await db.getSetting('fms_token'), 'new-provider-token');
 });
 
 test('settings reject oversized bodies and changes during collection', async t => {
@@ -288,14 +287,17 @@ test('settings reject oversized bodies and changes during collection', async t =
     method: 'POST', body: { fms_token: 'x'.repeat(20 * 1024) }
   });
   assert.equal(oversized.status, 413);
-  db.setSetting('fms_token', 'current-token');
+  await db.setSetting('fms_token', 'current-token');
   let release;
-  collector.fetchBuses = async () => new Promise(resolve => { release = resolve; });
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  collector.fetchBuses = async () => new Promise(resolve => { release = resolve; markStarted(); });
   const pending = collector.pollNow();
+  await started;
   try {
     const res = await request('/api/settings', { method: 'POST', body: { fms_token: 'replacement' } });
     assert.equal(res.status, 409);
-    assert.equal(db.getSetting('fms_token'), 'current-token');
+    assert.equal(await db.getSetting('fms_token'), 'current-token');
   } finally {
     release([]);
     await pending;
@@ -328,7 +330,7 @@ test('deployed administrative endpoints require the configured bearer token', as
     headers: { Authorization: 'Bearer test-admin-token' }
   });
   assert.equal(allowed.status, 200);
-  assert.equal(db.getSetting('fms_token'), 'provider-token');
+  assert.equal(await db.getSetting('fms_token'), 'provider-token');
 });
 
 test('hosted deployment without administrative credentials cannot mutate data', async t => {
@@ -340,7 +342,7 @@ test('hosted deployment without administrative credentials cannot mutate data', 
 test('export quotes provider text, preserves newlines, and neutralizes spreadsheet formulas', async t => {
   const { request, db } = await fixture(t);
   const timestamp = Date.now() - 1000;
-  db.recordPoll([
+  await db.recordPoll([
     normalizeBus({ vehplate: 'TEST,"QUOTED"\nPLATE' }, 'A1', timestamp),
     normalizeBus({ vehplate: '=1+2' }, 'A2', timestamp)
   ], timestamp);
@@ -355,7 +357,7 @@ test('export quotes provider text, preserves newlines, and neutralizes spreadshe
 test('clearing history resets observed fleet and returns an accurate count', async t => {
   const { request, db } = await fixture(t);
   const timestamp = Date.now() - 1000;
-  db.recordPoll([normalizeBus({ vehplate: 'TEST-CLEAR' }, 'A1', timestamp)], timestamp);
+  await db.recordPoll([normalizeBus({ vehplate: 'TEST-CLEAR' }, 'A1', timestamp)], timestamp);
   const res = await request('/api/clear-all', { method: 'POST' });
   assert.equal(res.status, 200);
   assert.equal(res.json.clearedCount, 1);
@@ -386,4 +388,22 @@ test('hosted CSV exports reject oversized responses with a usable retry hint', a
   const smaller = await request('/api/export?limit=1');
   assert.equal(smaller.status, 200);
   assert.match(smaller.data, /TEST-SMALL-EXPORT/);
+});
+
+
+test('database errors identify Turso failures without exposing driver details', async t => {
+  const { LibsqlError } = await import('@libsql/client/web');
+  const { request, db } = await fixture(t);
+  for (const [driverCode, expectedCode] of [
+    ['SQL_PARSE_ERROR', 'database_query_failed'], ['SQLITE_READONLY', 'database_access_failed'],
+    ['SERVER_ERROR', 'database_unavailable']
+  ]) {
+    db.getAvailableDates = async () => { throw new LibsqlError('private-token https://private.example secret SQL', driverCode); };
+    const res = await request('/api/status');
+    assert.equal(res.status, 503);
+    assert.equal(res.json.code, expectedCode);
+    assert.equal(res.json.databaseCode, driverCode);
+    assert.match(res.json.error, /Turso/);
+    assert.doesNotMatch(res.data, /private-token|private.example|secret SQL/);
+  }
 });

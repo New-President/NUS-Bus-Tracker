@@ -1,15 +1,16 @@
-﻿import { dbInstance } from './db.js';
 import { fetchAllLiveBuses, ProviderError } from './api_client.js';
 import { GuestTokenProvider } from './univus_auth.js';
 import { UnivusClient } from './univus_client.js';
 import { fetchPublicObservations } from './public_feed.js';
 import { getProviderConfig } from './provider_config.js';
+import { databaseFailure } from './database_errors.js';
 
 export class BusCollector {
-  constructor(db = dbInstance, {
+  constructor(db, {
     fetchBuses = fetchAllLiveBuses, fetchPublic = fetchPublicObservations,
     now = Date.now, env = process.env, tokenProvider, univusClient
   } = {}) {
+    if (!db) throw new TypeError('BusCollector requires a database.');
     this.db = db;
     this.fetchBuses = fetchBuses;
     this.fetchPublic = fetchPublic;
@@ -94,10 +95,13 @@ export class BusCollector {
       await this.db.deleteSetting('last_error');
       return { success: true, source: 'live', ...source, recordsCount: records.length, polledCount: records.length, timestamp };
     } catch (error) {
-      let message = error instanceof ProviderError ? error.message : 'Live collection failed. Check provider connectivity and database availability.';
+      const failure = databaseFailure(error);
+      let message = failure?.error || (error instanceof ProviderError ? error.message : 'Live collection failed. Check provider connectivity and database availability.');
+      if (failure) console.error(`[Database] ${failure.databaseCode}: ${failure.error}`);
       if (token) message = message.split(token).join('[redacted]').split(encodeURIComponent(token)).join('[redacted]');
       try { await this.db.setSetting('last_error', message); } catch { /* Storage may be unavailable. */ }
-      return { success: false, source: 'live', ...source, statusCode: 502, error: message, timestamp };
+      return { success: false, source: 'live', ...source, statusCode: failure?.statusCode || 502,
+        ...(failure ? { code: failure.code, databaseCode: failure.databaseCode } : {}), error: message, timestamp };
     } finally { this.currentSource = source; }
   }
 
@@ -139,5 +143,3 @@ export class BusCollector {
     };
   }
 }
-
-export const collectorInstance = new BusCollector();
