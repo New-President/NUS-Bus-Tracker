@@ -58,13 +58,30 @@ A 401 from an administrative action means the supplied administrator token does 
 
 ## 5. Set up automatic collection
 
-The default configuration deliberately has **no Vercel cron**, so it can deploy on Hobby. Manual **Poll Now** works on any plan. Dashboard refreshes only read stored data; leaving a browser open does not collect new observations.
+The repository includes [`.github/workflows/collect-buses.yml`](.github/workflows/collect-buses.yml), which calls `GET /api/cron` every ten minutes. This works with Vercel Hobby because GitHub Actions supplies the schedule. `vercel.json` does not declare a paid-plan cron. Dashboard refreshes only read stored data; leaving a browser open does not collect new observations.
 
-For continuous history, arrange a request every ten minutes using one of these options:
+### Activate the included GitHub Actions schedule
+
+1. Set a random `CRON_SECRET` in Vercel's **Production** environment and redeploy so the cron endpoint can authenticate scheduled requests.
+2. In your GitHub repository, open **Settings > Secrets and variables > Actions**. Add the following repository settings:
+
+   | Type | Name | Value |
+   | --- | --- | --- |
+   | Variable | `TRACKER_URL` | Your stable production origin, such as `https://YOUR-PROJECT.vercel.app`, with no API path. Use the project domain, not a URL tied to one deployment. |
+   | Secret | `CRON_SECRET` | The exact same secret configured in Vercel. |
+   | Secret, only if Deployment Protection is enabled | `VERCEL_AUTOMATION_BYPASS_SECRET` | Your Vercel protection bypass secret for automation. |
+
+3. Commit and push the workflow and `scripts/poll_scheduled.js` to the repository's default branch. Enable GitHub Actions if GitHub prompts you. The workflow runs only on the default branch and is disabled in forks.
+4. Open **Actions > Collect buses every 10 minutes > Run workflow**, select the default branch, and run it once. The collection step must succeed and report a record count and timestamp. Confirm `/api/status` now has the new `lastPolledAt` value.
+5. Scheduled runs are requested at **:07, :17, :27, :37, :47, and :57** each hour, even when the website is closed. Check the Actions run history and the dashboard's last collection time to confirm ongoing collection.
+
+The schedule is not active merely because the workflow exists locally: it must be on the default branch with the URL and matching secrets configured. The runner makes one authenticated request and succeeds only if the endpoint confirms a committed collection. HTTP errors, redirects, invalid JSON, and unsuccessful collection responses fail the workflow. Secrets and raw server responses are not logged. Jobs do not overlap each other, and requests are not retried automatically because a timed-out request may already have committed its data.
+
+[GitHub's scheduler](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule) can delay or drop runs under load; it does not guarantee exact ten-minute timing. Scheduled workflows in public repositories are disabled after 60 days without repository activity. If you need more consistent timing, use Vercel Pro cron or a dedicated external scheduler. Use only one hosted scheduler to avoid duplicate collection. GitHub Actions usage limits and Vercel function usage limits apply.
 
 ### Vercel Pro cron
 
-Add this top-level property to `vercel.json`, keeping the other properties, and redeploy:
+As an alternative to GitHub Actions, disable **Collect buses every 10 minutes** in GitHub Actions, add this top-level property to `vercel.json`, keeping the other properties, and redeploy:
 
 ```json
 "crons": [
@@ -74,9 +91,9 @@ Add this top-level property to `vercel.json`, keeping the other properties, and 
 
 Vercel cron runs on production deployments and supplies `Authorization: Bearer <CRON_SECRET>` automatically. Hobby cron is limited to once per day and rejects a ten-minute schedule during deployment. See [cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing) and [cron authentication](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs).
 
-### External scheduler with Vercel Hobby
+### Another external scheduler
 
-Configure your scheduler to send:
+If you prefer a dedicated scheduler, disable the GitHub Actions workflow and configure your scheduler to send:
 
 - Method: `GET`
 - URL: `https://YOUR-PROJECT.vercel.app/api/cron`

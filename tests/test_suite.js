@@ -618,6 +618,43 @@ test('stopping the scheduler during a shared state read prevents a new provider 
   assert.equal(collector.timer, null);
 });
 
+test('local scheduling automatically collects on startup and every ten minutes until stopped', async t => {
+  const db = createTestDatabase(t);
+  await db.ready();
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
+  let providerCalls = 0;
+  const collector = new BusCollector(db, {
+    env: { FMS_TOKEN: TOKEN },
+    fetchBuses: async () => {
+      providerCalls++;
+      return [normalizeBus({ vehplate: 'TEST-AUTOMATIC-POLL' }, 'A1', Date.now())];
+    }
+  });
+  t.after(() => collector.stop());
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+
+  collector.start();
+  await flush();
+  assert.equal(providerCalls, 1, 'Starting the local server collects without a dashboard request');
+  assert.equal((await db.getLatestPoll()).timestamp, NOW);
+  assert.equal((await collector.getStatus()).nextPollInSec, 600);
+
+  t.mock.timers.tick(599999);
+  await flush();
+  assert.equal(providerCalls, 1, 'No second collection occurs before ten minutes');
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(providerCalls, 2, 'The second automatic collection starts exactly ten minutes later');
+  assert.equal((await db.getLatestPoll()).timestamp, NOW + 600000);
+  assert.equal(await db.getTotalSnapshotsCount(), 2);
+
+  collector.stop();
+  t.mock.timers.tick(600000);
+  await flush();
+  assert.equal(providerCalls, 2, 'Stopping the server cancels the next automatic collection');
+  assert.equal(collector.timer, null);
+});
+
 
 test('database initialization failures are reported before contacting the bus provider', async t => {
   const { LibsqlError } = await import('@libsql/client/web');

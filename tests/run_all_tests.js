@@ -11,6 +11,7 @@ const suites = [
   'tests/test_remote_database.js',
   'tests/test_server_endpoints.js',
   'tests/test_vercel_handler.js',
+  'tests/test_scheduled_poll.js',
   'tests/test_frontend.js',
   'tests/test_html_contract.js'
 ];
