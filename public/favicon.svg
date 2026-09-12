@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 64" role="img" aria-labelledby="title">
+  <title>NUS ISB</title>
+  <rect width="120" height="64" rx="9" fill="#071d49"/>
+  <rect x="8" y="8" width="52" height="48" rx="6" fill="#07549a"/>
+  <rect x="60" y="8" width="52" height="48" rx="6" fill="#ef8b00"/>
+  <text x="34" y="40" fill="#fff" font-family="Arial, sans-serif" font-size="22" font-weight="700" text-anchor="middle">NUS</text>
+  <text x="86" y="40" fill="#fff" font-family="Arial, sans-serif" font-size="21" font-weight="700" text-anchor="middle">ISB</text>
+</svg>
