@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   poll:
+    environment: Production
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

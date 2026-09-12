@@ -99,7 +99,7 @@ If you use Vercel Pro cron, add this top-level property to `vercel.json`:
 
 ### Method D: GitHub Actions
 
-The repository includes `.github/workflows/poll.yml`, which runs `node scripts/poll.js --once` every ten minutes and writes directly to Turso. Add these repository **Actions secrets**:
+The repository includes `.github/workflows/poll.yml`, which runs `node scripts/poll.js --once` every ten minutes and writes directly to Turso. The workflow targets the `Production` GitHub environment. Add these **environment secrets** under **Settings > Environments > Production**:
 
 | Secret | Value |
 | --- | --- |
