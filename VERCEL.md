@@ -97,6 +97,17 @@ If you use Vercel Pro cron, add this top-level property to `vercel.json`:
 ]
 ```
 
+### Method D: GitHub Actions
+
+The repository includes `.github/workflows/poll.yml`, which runs `node scripts/poll.js --once` every ten minutes and writes directly to Turso. Add these repository **Actions secrets**:
+
+| Secret | Value |
+| --- | --- |
+| `TURSO_DATABASE_URL` | Your Turso database URL |
+| `TURSO_AUTH_TOKEN` | A read/write Turso database token |
+
+Optional repository **Actions variables** are `BUS_PROVIDER`, `FMS_ROUTES`, and `BUS_STOPS`. They default to `auto`, `A1,A2,D1,D2,E,K`, and `UTOWN,KR-MRT`. The workflow can also be started manually from the **Actions** tab. GitHub may delay scheduled runs during periods of high load; the workflow's concurrency setting prevents delayed runs from overlapping.
+
 ## Local checks and development
 
 With Node.js 24 installed:

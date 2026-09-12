@@ -1,0 +1,39 @@
+name: Poll uNivUS API
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: univus-poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Poll uNivUS and store observations
+        run: npm run poll -- --once
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          BUS_PROVIDER: ${{ vars.BUS_PROVIDER || 'auto' }}
+          FMS_ROUTES: ${{ vars.FMS_ROUTES || 'A1,A2,D1,D2,E,K' }}
+          BUS_STOPS: ${{ vars.BUS_STOPS || 'UTOWN,KR-MRT' }}
