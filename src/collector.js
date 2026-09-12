@@ -28,7 +28,7 @@ export class BusCollector {
   }
 
   get isPolling() { return this.pendingPoll !== null; }
-  async getToken() { return this.env.FMS_TOKEN?.trim() || await this.db.getSetting('fms_token') || ''; }
+  async getToken() { return ''; }
 
   start() {
     if (this.running) return;
@@ -63,11 +63,9 @@ export class BusCollector {
 
   async collect() {
     const timestamp = this.now();
-    let token = '';
     let source = this.currentSource;
     try {
-      token = await this.getToken();
-      source = getProviderConfig(this.env, Boolean(token));
+      source = getProviderConfig(this.env);
       await this.db.setSetting('last_attempt_at', timestamp);
       let records;
       if (source.dataProvider === 'univus') {
@@ -75,14 +73,13 @@ export class BusCollector {
         catch (error) {
           const automatic = (this.env.BUS_PROVIDER?.trim() || 'auto') === 'auto';
           if (!automatic || !(error instanceof ProviderError)) throw error;
-          source = getProviderConfig(this.env, false, true);
+          source = getProviderConfig(this.env, true);
         }
       } else if (source.dataProvider === 'connectx') {
-        const manual = source.authMode === 'manual';
-        if (!manual) token = await this.tokenProvider.getToken();
+        let token = await this.tokenProvider.getToken();
         try { records = await this.fetchBuses(token); }
         catch (error) {
-          if (manual || ![401, 403].includes(error.httpStatus)) throw error;
+          if (![401, 403].includes(error.httpStatus)) throw error;
           this.tokenProvider.invalidate();
           token = await this.tokenProvider.getToken();
           records = await this.fetchBuses(token);
@@ -98,7 +95,6 @@ export class BusCollector {
       const failure = databaseFailure(error);
       let message = failure?.error || (error instanceof ProviderError ? error.message : 'Live collection failed. Check provider connectivity and database availability.');
       if (failure) console.error(`[Database] ${failure.databaseCode}: ${failure.error}`);
-      if (token) message = message.split(token).join('[redacted]').split(encodeURIComponent(token)).join('[redacted]');
       try { await this.db.setSetting('last_error', message); } catch { /* Storage may be unavailable. */ }
       return { success: false, source: 'live', ...source, statusCode: failure?.statusCode || 502,
         ...(failure ? { code: failure.code, databaseCode: failure.databaseCode } : {}), error: message, timestamp };
@@ -107,32 +103,31 @@ export class BusCollector {
 
   async getStatus() {
     const now = this.now();
-    const [token, lastPolled, lastAttempt, latest, lastError, totalSnapshots] = await Promise.all([
-      this.getToken(), this.db.getSetting('last_polled_at'), this.db.getSetting('last_attempt_at'),
+    const [lastPolled, lastAttempt, latest, lastError, totalSnapshots] = await Promise.all([
+      this.db.getSetting('last_polled_at'), this.db.getSetting('last_attempt_at'),
       this.db.getLatestPoll(now), this.db.getSetting('last_error'), this.db.getTotalSnapshotsCount()
     ]);
     const lastPolledAt = Number(lastPolled || 0);
     const lastAttemptAt = Number(lastAttempt || 0);
-    const configured = getProviderConfig(this.env, Boolean(token));
+    const configured = getProviderConfig(this.env);
     // Attribute stored observations independently of the next provider request.
     const observed = latest ? getProviderConfig({
       ...this.env, BUS_PROVIDER: latest.source_provider,
       BUS_STOPS: JSON.parse(latest.monitored_stops).join(',')
-    }, Boolean(token)) : this.currentSource || configured;
+    }) : this.currentSource || configured;
     const source = { ...observed, authMode: configured.authMode,
       providerWarning: configured.authMode === 'guest' ? this.currentSource?.providerWarning || null : null };
-    const manual = configured.authMode === 'manual';
     const univus = configured.dataProvider === 'univus';
     const publicOnly = configured.authMode === 'public';
     const guestStatus = univus ? this.univusClient.getStatus() : this.tokenProvider.getStatus();
-    const hasToken = !publicOnly && (manual || (univus ? Boolean(guestStatus.hasSession) :
-      Boolean(guestStatus.tokenExpiresAt && Date.parse(guestStatus.tokenExpiresAt) > now)));
+    const hasToken = !publicOnly && (univus ? Boolean(guestStatus.hasSession) :
+      Boolean(guestStatus.tokenExpiresAt && Date.parse(guestStatus.tokenExpiresAt) > now));
     return {
       active: this.running, collectionMode: this.running ? 'scheduled' : 'on-demand',
       source: 'live', ...source, configuredProvider: configured.dataProvider,
       hasToken, requiresToken: false, canPoll: true,
-      tokenSource: publicOnly ? 'none' : manual ? (this.env.FMS_TOKEN?.trim() ? 'environment' : 'stored') : 'guest',
-      tokenExpiresAt: manual || publicOnly ? null : guestStatus.tokenExpiresAt,
+      tokenSource: publicOnly ? 'none' : 'guest',
+      tokenExpiresAt: publicOnly ? null : guestStatus.tokenExpiresAt,
       sessionRenewAt: univus ? guestStatus.sessionRenewAt : null,
       connectionState: lastError ? 'error' : lastPolledAt && lastAttemptAt ? 'healthy' : 'pending',
       lastError, isPolling: this.isPolling, isStale: !lastPolledAt || now - lastPolledAt > 15 * 60 * 1000,

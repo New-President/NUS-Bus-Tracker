@@ -179,30 +179,9 @@ test('collector obtains a guest token and collects without manual credentials', 
   const result = await collector.pollNow();
   assert.equal(result.success, true);
   assert.equal(receivedToken, 'guest-provider-test-token');
-  assert.equal(await db.getSetting('fms_token'), '');
   assert.equal(await db.getTotalSnapshotsCount(), 1);
   assert.equal((await collector.getStatus()).connectionState, 'healthy');
   assert.equal(JSON.stringify(await collector.getStatus()).includes(receivedToken), false);
-});
-
-test('collector gives environment credentials precedence and never exposes them', async t => {
-  const db = createTestDatabase(t);
-  await db.setSetting('fms_token', 'stored-test-token');
-  let receivedToken;
-  let guestCalls = 0;
-  const tokenProvider = guestProvider();
-  tokenProvider.getToken = async () => { guestCalls++; throw new Error('Manual credentials must take precedence'); };
-  const collector = new BusCollector(db, {
-    now: () => NOW, env: { FMS_TOKEN: TOKEN }, tokenProvider,
-    fetchBuses: async token => { receivedToken = token; return []; }
-  });
-  const result = await collector.pollNow();
-  assert.equal(result.success, true);
-  assert.equal(receivedToken, TOKEN);
-  assert.equal(guestCalls, 0);
-  assert.equal((await collector.getStatus()).authMode, 'manual');
-  assert.equal(JSON.stringify(await collector.getStatus()).includes(TOKEN), false);
-  assert.equal((await collector.getStatus()).lastPolledAt, NOW);
 });
 
 test('an expired guest session is renewed once before storing a successful collection', async t => {
@@ -271,31 +250,13 @@ test('provider application errors do not trigger session renewal or create a suc
   assert.equal((await collector.getStatus()).lastPolledAt, 0);
 });
 
-test('a rejected manual override is not silently replaced with guest authentication', async t => {
-  const db = createTestDatabase(t);
-  let guestCalls = 0;
-  let attempts = 0;
-  const tokenProvider = guestProvider();
-  tokenProvider.getToken = async () => { guestCalls++; return 'guest-token'; };
-  const collector = new BusCollector(db, {
-    now: () => NOW, env: { FMS_TOKEN: TOKEN }, tokenProvider,
-    fetchBuses: async () => { attempts++; throw new ProviderError('Manual authorization failed', { httpStatus: 401 }); }
-  });
-  const result = await collector.pollNow();
-  assert.equal(result.success, false);
-  assert.equal(result.authMode, 'manual');
-  assert.equal(attempts, 1);
-  assert.equal(guestCalls, 0);
-  assert.equal(await db.getTotalSnapshotsCount(), 0);
-});
-
 test('provider failure preserves existing history and successful poll time', async t => {
   const db = createTestDatabase(t);
   const timestamp = Date.now() - 1000;
   await db.recordPoll([normalizeBus({ vehplate: 'TEST-RETAINED' }, 'A1', timestamp)], timestamp);
   await db.setSetting('last_polled_at', String(timestamp));
   const collector = new BusCollector(db, {
-    env: { FMS_TOKEN: TOKEN }, tokenProvider: guestProvider(),
+    env: { BUS_PROVIDER: 'connectx' }, tokenProvider: guestProvider(),
     fetchBuses: async () => { throw new Error('Provider unavailable'); }
   });
   const result = await collector.pollNow();
@@ -311,7 +272,7 @@ test('a successful empty poll removes old buses from the current fleet', async t
   const timestamp = Date.now() - 1000;
   await db.recordPoll([normalizeBus({ vehplate: 'TEST-DEPARTED' }, 'A1', timestamp)], timestamp);
   const collector = new BusCollector(db, {
-    env: { FMS_TOKEN: TOKEN }, tokenProvider: guestProvider(), fetchBuses: async () => []
+    env: { BUS_PROVIDER: 'connectx' }, tokenProvider: guestProvider(), fetchBuses: async () => []
   });
   const result = await collector.pollNow();
   assert.equal(result.success, true);
@@ -327,7 +288,7 @@ test('concurrent poll requests share one provider request and one stored batch',
   const started = new Promise(resolve => { markStarted = resolve; });
   let calls = 0;
   const collector = new BusCollector(db, {
-    env: { FMS_TOKEN: TOKEN }, tokenProvider: guestProvider(),
+    env: { BUS_PROVIDER: 'connectx' }, tokenProvider: guestProvider(),
     fetchBuses: async () => {
       calls++;
       markStarted();
@@ -377,7 +338,6 @@ test('automatic collection uses direct uNivUS guest sessions and retains GPS and
   assert.equal(record.source_provider, 'univus');
   assert.equal(record.ridership, 0);
   assert.equal(record.lat, 1.296);
-  assert.equal(await db.getSetting('fms_token'), '');
 });
 
 test('temporary direct failures use labelled public observations and direct collection recovers at the next poll', async t => {
@@ -430,8 +390,8 @@ test('a failed public fallback preserves previous observations and never commits
   assert.equal((await collector.getStatus()).lastPolledAt, NOW - 1);
 });
 
-test('manual and explicitly direct configurations never silently switch providers', async t => {
-  for (const env of [{ FMS_TOKEN: TOKEN }, { BUS_PROVIDER: 'connectx' }, { BUS_PROVIDER: 'univus' }]) {
+test('explicitly direct configurations never silently switch providers', async t => {
+  for (const env of [{ BUS_PROVIDER: 'connectx' }, { BUS_PROVIDER: 'univus' }]) {
     const db = createTestDatabase(t);
     const fail = async () => { throw new ProviderError('Upstream failed'); };
     const collector = new BusCollector(db, {
@@ -448,7 +408,7 @@ test('explicit public mode does not acquire or forward any credentials', async t
   const tokenProvider = guestProvider();
   tokenProvider.getToken = async () => assert.fail('Public mode cannot authenticate');
   const collector = new BusCollector(db, {
-    env: { BUS_PROVIDER: 'community', BUS_STOPS: 'UTOWN', FMS_TOKEN: TOKEN }, now: () => NOW, tokenProvider,
+    env: { BUS_PROVIDER: 'community', BUS_STOPS: 'UTOWN' }, now: () => NOW, tokenProvider,
     univusClient: modernClient(async () => assert.fail('Public mode cannot authenticate')),
     fetchBuses: async () => assert.fail('Public mode cannot contact ConnectX'),
     fetchPublic: async options => { assert.deepEqual(options.stops, ['UTOWN']); return []; }
@@ -494,24 +454,21 @@ function deferred() {
   return { promise, resolve };
 }
 
-test('collector defers shared database access and resolves stored credentials and status asynchronously', async t => {
+test('collector defers shared database access and resolves status asynchronously', async t => {
   const { db, stored, calls } = asyncDatabase(t);
-  await stored.setSetting('fms_token', TOKEN);
   await stored.setSetting('last_attempt_at', NOW);
   await stored.recordPoll([normalizeBus({ vehplate: 'TEST-SHARED-STATUS' }, 'A1', NOW)], NOW);
   const collector = new BusCollector(db, { env: {}, now: () => NOW, tokenProvider: guestProvider() });
   t.after(() => collector.stop());
   assert.deepEqual(calls, [], 'Constructing a cold function must not read the database');
-  assert.equal(await collector.getToken(), TOKEN);
   const status = await collector.getStatus();
-  assert.equal(status.authMode, 'manual');
-  assert.equal(status.configuredProvider, 'connectx');
+  assert.equal(status.authMode, 'guest');
+  assert.equal(status.configuredProvider, 'univus');
   assert.equal(status.connectionState, 'healthy');
   assert.equal(status.lastPolledAt, NOW);
   assert.equal(status.totalSnapshots, 1);
   assert.equal(status.collectionMode, 'on-demand');
   assert.equal(status.nextPollInSec, null);
-  assert.equal(JSON.stringify(status).includes(TOKEN), false);
   collector.start();
   const scheduled = await collector.getStatus();
   assert.equal(scheduled.collectionMode, 'scheduled');
@@ -536,7 +493,7 @@ test('collection stays pending until shared observations and error cleanup are p
     return await stored.deleteSetting(key);
   };
   const collector = new BusCollector(db, {
-    env: { FMS_TOKEN: TOKEN }, now: () => NOW,
+    env: { BUS_PROVIDER: 'connectx' }, now: () => NOW, tokenProvider: guestProvider(),
     fetchBuses: async () => [normalizeBus({ vehplate: 'TEST-SHARED-COMMIT' }, 'A1', NOW)]
   });
   let settled = false;
@@ -571,7 +528,7 @@ test('a rejected shared database commit cannot report a successful collection', 
     throw new Error('Private database connection detail');
   };
   const collector = new BusCollector(db, {
-    env: { FMS_TOKEN: TOKEN }, now: () => NOW,
+    env: { BUS_PROVIDER: 'connectx' }, now: () => NOW, tokenProvider: guestProvider(),
     fetchBuses: async () => [normalizeBus({ vehplate: 'TEST-NOT-COMMITTED' }, 'A1', NOW)]
   });
   const result = await collector.pollNow();
@@ -589,7 +546,7 @@ test('failed asynchronous attempt recording stops collection even if error recor
   db.setSetting = async () => { throw new Error('Database unavailable'); };
   let providerCalls = 0;
   const collector = new BusCollector(db, {
-    env: { FMS_TOKEN: TOKEN }, now: () => NOW,
+    env: { BUS_PROVIDER: 'connectx' }, now: () => NOW, tokenProvider: guestProvider(),
     fetchBuses: async () => { providerCalls++; return []; }
   });
   const result = await collector.pollNow();
@@ -605,7 +562,7 @@ test('stopping the scheduler during a shared state read prevents a new provider 
   db.getSetting = async () => { await allowRead.promise; return '0'; };
   let providerCalls = 0;
   const collector = new BusCollector(db, {
-    env: { FMS_TOKEN: TOKEN }, now: () => NOW,
+    env: { BUS_PROVIDER: 'connectx' }, now: () => NOW,
     fetchBuses: async () => { providerCalls++; return []; }
   });
   t.after(() => collector.stop());
@@ -624,7 +581,7 @@ test('local scheduling automatically collects on startup and every ten minutes u
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   let providerCalls = 0;
   const collector = new BusCollector(db, {
-    env: { FMS_TOKEN: TOKEN },
+    env: { BUS_PROVIDER: 'connectx' }, tokenProvider: guestProvider(),
     fetchBuses: async () => {
       providerCalls++;
       return [normalizeBus({ vehplate: 'TEST-AUTOMATIC-POLL' }, 'A1', Date.now())];

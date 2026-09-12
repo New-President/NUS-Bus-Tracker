@@ -17,11 +17,11 @@ Both Turso variables are required locally and on Vercel. Use a separate developm
 
 For local use at `http://127.0.0.1:3000`, leave `ADMIN_TOKEN` and `CRON_SECRET` blank unless you intentionally configure them. Any nonempty `ADMIN_TOKEN` requires that same value in **Data & API Settings > Dashboard admin token** before manual collection, even locally. Set real random secrets in Vercel. Restart the server after changing `.env`.
 
-Open http://127.0.0.1:3000. Choose **Poll Now** to collect immediately. Default automatic mode uses the official uNivUS web application's guest session; no NUS account login, bus API key, or manually supplied FMS token is required. Collection runs every ten minutes while the server is running.
+Open http://127.0.0.1:3000. Choose **Poll Now** to collect immediately. Default automatic mode uses the official uNivUS web application's guest session; no NUS account login, bus API key, or manual token is required. Collection runs every ten minutes while the server is running.
 
 The session is renewed after 23 hours 45 minutes, or earlier if a returned cookie expires. The fifteen-minute margin allows a ten-minute poller to renew within the daily cycle. The dashboard shows the planned renewal time; it does not invent an expiry for opaque session cookies. A rejected session triggers one new guest login and retry. Concurrent routes share authentication.
 
-The server binds to loopback by default. Set `HOST` and `PORT` to change the listening address; a busy port produces an error. Optional manual ConnectX overrides remain under **Data & API Settings** or `FMS_TOKEN`; environment overrides take precedence. Clear a manual FMS override to return to automatic uNivUS access.
+The server binds to loopback by default. Set `HOST` and `PORT` to change the listening address; a busy port produces an error.
 
 ## Direct uNivUS connection
 
@@ -53,7 +53,6 @@ Guest cookies are never written to the database, returned by dashboard APIs, inc
 | `BUS_PROVIDER` | `auto` (default): direct uNivUS with public fallback; `univus`: direct uNivUS only; `community`: public arrivals only; `connectx`: older ConnectX integration only. |
 | `FMS_ROUTES` | Comma-separated route identifiers shared by the adapters; default `A1,A2,D1,D2,E,K`. |
 | `BUS_STOPS` | One to five public stop identifiers; default `UTOWN,KR-MRT`. Applies only to public coverage. |
-| `FMS_TOKEN` | Optional manual ConnectX override in `auto`/`connectx` mode. Leave blank for automatic uNivUS sessions. |
 | `UNIVUS_HTD_API`, `UNIVUS_APP_API` | Optional public-app identifier overrides for the older ConnectX authentication flow only. |
 | `UNIVUS_APP_VERSION` | Older ConnectX guest client version; default `2.56.0`. |
 | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Required Turso database URL and read/write token for both local and hosted operation. |
@@ -62,9 +61,9 @@ Guest cookies are never written to the database, returned by dashboard APIs, inc
 | `ADMIN_TOKEN` | Bearer credential for polling, settings, and history deletion. Required for remote administrative access. |
 | `CRON_SECRET` | Separate bearer credential required for `GET /api/cron`. |
 
-`npm start` loads `.env` when present and preserves variables already set in the process environment. On Vercel, configure variables in project settings. The optional administrator token entered in the dashboard stays in page memory. Manual FMS tokens saved through Settings reside in the selected database; keep database access private. Read-only telemetry endpoints are public to anyone who can reach the server. Local writes without `ADMIN_TOKEN` require loopback, a localhost Host header, and the same origin. Hosted writes require `ADMIN_TOKEN`.
+`npm start` loads `.env` when present and preserves variables already set in the process environment. On Vercel, configure variables in project settings. The optional administrator token entered in the dashboard stays in page memory. Read-only telemetry endpoints are public to anyone who can reach the server. Local writes without `ADMIN_TOKEN` require loopback, a localhost Host header, and the same origin. Hosted writes require `ADMIN_TOKEN`.
 
-The older [documented guest/FMS flow](https://suibianp.github.io/nus-nextbus-new-api/) remains available in explicit `connectx` mode: get-access-token, buswidget initialization, then `nextbus_token2` for ConnectX requests. Its documented ActiveBus query returned error 4 during verification; the default integration now queries uNivUS directly.
+The older [documented guest/FMS flow](https://suibianp.github.io/nus-nextbus-new-api/) remains available in explicit `connectx` mode: get-access-token, buswidget initialization, then guest token for ConnectX requests. Its documented ActiveBus query returned error 4 during verification; the default integration now queries uNivUS directly.
 
 ## Checks
 
@@ -101,4 +100,3 @@ See [VERCEL.md](VERCEL.md) for step-by-step Vercel deployment. Bus data is polle
 - **Local server collector**: When running `npm start`, the server automatically collects from the uNivUS API every 10 minutes.
 - **Browser-based polling**: When the dashboard is open, client-side JavaScript automatically collects every 10 minutes and on page load if data is stale.
 - **Unauthenticated endpoint**: `GET /api/cron` can be called by any JavaScript client or runner without authentication headers. Turso is required; there is no local database fallback.
-

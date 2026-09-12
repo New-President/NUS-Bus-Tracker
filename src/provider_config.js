@@ -1,10 +1,11 @@
-﻿export function getProviderConfig(env = process.env, hasManualToken = false, publicFallback = false) {
+export function getProviderConfig(env = process.env, fallbackArg = false, legacyFallback = false) {
+  const publicFallback = typeof fallbackArg === 'boolean' && legacyFallback ? legacyFallback : Boolean(fallbackArg);
   const mode = env.BUS_PROVIDER?.trim() || 'auto';
   if (!['auto', 'univus', 'community', 'connectx'].includes(mode)) {
     throw new Error('BUS_PROVIDER must be auto, univus, community, or connectx.');
   }
-  const fallback = mode === 'auto' && !hasManualToken && publicFallback;
-  const provider = mode === 'auto' ? (hasManualToken ? 'connectx' : fallback ? 'community' : 'univus') : mode;
+  const fallback = mode === 'auto' && publicFallback;
+  const provider = mode === 'auto' ? (fallback ? 'community' : 'univus') : mode;
   if (provider === 'community') {
     const stops = [...new Set((env.BUS_STOPS || 'UTOWN,KR-MRT').split(',').map(stop => stop.trim().toUpperCase()))];
     if (!stops.length || stops.length > 5 || stops.some(stop => !/^[A-Z0-9-]{1,20}$/.test(stop))) {
@@ -23,7 +24,7 @@
     coverageNote: 'Vehicles reported directly by uNivUS for the configured routes.', providerWarning: null
   };
   return {
-    dataProvider: 'connectx', authMode: hasManualToken ? 'manual' : 'guest', coverage: 'route-fleet',
+    dataProvider: 'connectx', authMode: 'guest', coverage: 'route-fleet',
     sourceUrl: 'https://fms.connectx.com.sg', monitoredStops: [],
     coverageNote: 'Vehicles reported by ConnectX for the configured routes.', providerWarning: null
   };

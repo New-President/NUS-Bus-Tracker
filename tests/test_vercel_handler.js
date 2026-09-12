@@ -131,28 +131,25 @@ test('serverless cron polls without requiring authentication or secret', async (
 test('serverless authorization cannot be bypassed with forwarded localhost headers', async () => {
   delete process.env.ADMIN_TOKEN;
   const res = await invoke('/api/settings', {
-    method: 'POST', body: { fms_token: 'rejected-token' },
+    method: 'POST', body: {},
     headers: { host: 'localhost', 'x-forwarded-host': 'localhost', 'x-forwarded-for': '127.0.0.1' }
   });
   assert.ok([401, 403, 503].includes(res.status));
-  assert.notEqual(await db.getSetting('fms_token'), 'rejected-token');
 });
 
 test('serverless pre-parsed settings body is validated and authenticated', async () => {
   process.env.ADMIN_TOKEN = 'serverless-admin-token';
   const headers = { authorization: 'Bearer serverless-admin-token' };
   const saved = await invoke('/api/settings', {
-    method: 'POST', headers, body: { fms_token: 'stored-provider-token' }
+    method: 'POST', headers, body: {}
   });
   assert.equal(saved.status, 200);
   assert.equal(saved.json.success, true);
-  assert.equal(saved.data.includes('stored-provider-token'), false);
-  assert.equal(await db.getSetting('fms_token'), 'stored-provider-token');
-  for (const body of ['{broken', null, [], { fms_token: 1 }]) {
+  assert.equal(saved.json.dataProvider, 'univus');
+  for (const body of ['{broken', null, []]) {
     const res = await invoke('/api/settings', { method: 'POST', headers, body });
     assert.equal(res.status, 400);
   }
-  assert.equal(await db.getSetting('fms_token'), 'stored-provider-token');
   delete process.env.ADMIN_TOKEN;
 });
 

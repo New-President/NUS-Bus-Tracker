@@ -29,25 +29,34 @@ function canvasContext() {
 function dashboard() {
   const elements = new Map();
   const contexts = new Map();
+  const documentListeners = new Map();
   for (const [, id] of html.matchAll(/\bid=["']([^"']+)["']/g)) {
     const listeners = new Map();
     const classes = new Set();
     const element = {
-      id, innerHTML: '', textContent: '', value: '', style: {}, dataset: {}, hidden: false,
+      id, innerHTML: '', textContent: '', value: '',
+      style: {
+        setProperty(name, value) { this[name] = value; },
+        removeProperty(name) { delete this[name]; }
+      },
+      dataset: {}, hidden: false,
       disabled: false, parentElement: { clientWidth: 1100 }, offsetWidth: 240, offsetHeight: 120,
       classList: {
         toggle(name, enabled) { if (enabled ?? !classes.has(name)) classes.add(name); else classes.delete(name); },
-        add(name) { classes.add(name); }, remove(name) { classes.delete(name); }
+        add(name) { classes.add(name); }, remove(name) { classes.delete(name); },
+        contains(name) { return classes.has(name); }
       },
       addEventListener(type, listener) {
         if (!listeners.has(type)) listeners.set(type, []);
         listeners.get(type).push(listener);
       },
+      click() { return this.dispatch('click'); },
       async dispatch(type, event = {}) {
         for (const listener of listeners.get(type) || []) {
           await listener({ target: element, preventDefault() {}, ...event });
         }
       },
+      closest() { return this; },
       setAttribute(name, value) { this[name] = value; },
       querySelectorAll() { return []; },
       getBoundingClientRect() { return { left: 0, top: 0, width: 1072, height: 420 }; },
@@ -59,9 +68,12 @@ function dashboard() {
     elements.set(id, element);
   }
   const markers = [];
+  const polylines = [];
+  const layerGroups = [];
+  let mapInstance = null;
   const leaflet = {
     divIcon(options) { return options; },
-    marker(location, { icon }) {
+    marker(location, { icon } = {}) {
       const marker = {
         location, icon,
         addTo() { markers.push(this); return this; },
@@ -71,6 +83,44 @@ function dashboard() {
         setPopupContent(value) { this.popup = value; return this; }
       };
       return marker;
+    },
+    polyline(latlngs, options = {}) {
+      const poly = {
+        latlngs, options,
+        addTo() { polylines.push(this); return this; },
+        bindTooltip(tooltip, opts) { this.tooltip = tooltip; this.tooltipOpts = opts; return this; },
+        getBounds() { return { isValid() { return true; } }; }
+      };
+      polylines.push(poly);
+      return poly;
+    },
+    layerGroup(layers = []) {
+      const group = {
+        layers: [...layers],
+        addTo() { layerGroups.push(this); return this; }
+      };
+      return group;
+    },
+    map() {
+      mapInstance = {
+        center: null, zoom: null,
+        setView(c, z) { this.center = c; this.zoom = z; return this; },
+        fitBounds(b, opts) { this.bounds = b; this.fitBoundsOpts = opts; return this; },
+        removeLayer(l) {
+          const mIdx = markers.indexOf(l);
+          if (mIdx !== -1) markers.splice(mIdx, 1);
+          const pIdx = polylines.indexOf(l);
+          if (pIdx !== -1) polylines.splice(pIdx, 1);
+          const gIdx = layerGroups.indexOf(l);
+          if (gIdx !== -1) layerGroups.splice(gIdx, 1);
+          return this;
+        },
+        invalidateSize() { return this; }
+      };
+      return mapInstance;
+    },
+    tileLayer() {
+      return { on() { return this; }, addTo() { return this; } };
     }
   };
   class FixedDate extends Date {
@@ -85,7 +135,15 @@ function dashboard() {
       hidden: false,
       getElementById(id) { return elements.get(id) ?? null; },
       querySelectorAll() { return []; },
-      addEventListener() {}
+      addEventListener(type, listener) {
+        if (!documentListeners.has(type)) documentListeners.set(type, []);
+        documentListeners.get(type).push(listener);
+      },
+      async dispatch(type, event = {}) {
+        for (const listener of documentListeners.get(type) || []) {
+          await listener({ preventDefault() {}, ...event });
+        }
+      }
     },
     window: { devicePixelRatio: 1, addEventListener() {} },
     L: leaflet,
@@ -95,13 +153,18 @@ function dashboard() {
   vm.runInContext(app + `\n;globalThis.dashboard = {
     STATE, renderTimelineChart, renderHourlyBarChart, renderSummaryCards,
     renderFleetGrid, renderMapBuses, renderRouteFilters, renderStatus,
-    formatLocalDate, formatTime, setupActionButtons, setupFilters,
-    setupChartInteractivity, fetchHistory24h
+    initLeafletMap, renderBusStopsOnMap, renderRouteTraceOnMap,
+    formatLocalDate, formatTime, setupActionButtons, setupFilters, setupTabs,
+    setupChartInteractivity, fetchHistory24h,
+    openVehicleDashboard, closeVehicleDashboard, renderVehicleDetailMap,
+    renderVehicleDetailChart, setupVehicleDashboardInteractivity
   };`, sandbox, { filename: 'public/app.js' });
   return {
-    ...sandbox.dashboard, sandbox, markers,
+    ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
+    get mapInstance() { return mapInstance; },
     element: id => { assert.ok(elements.has(id), `Expected DOM element ${id}`); return elements.get(id); },
-    drawing: id => contexts.get(id)?.records
+    drawing: id => contexts.get(id)?.records,
+    dispatchDocument: (type, event) => sandbox.document.dispatch(type, event)
   };
 }
 
@@ -122,7 +185,7 @@ function reportedFleet(ui, buses, { stale = false } = {}) {
 }
 
 test('empty and null-only timeline views show missing readings without drawing invented observations', () => {
-  for (const currentView of ['exact', 'occupancy', 'crowd']) {
+  for (const currentView of ['exact', 'crowd']) {
     const ui = dashboard();
     ui.STATE.currentView = currentView;
     ui.STATE.history24h = {
@@ -245,17 +308,6 @@ test('dashboard date controls and chart labels use Singapore time across UTC mid
   assert.ok(ui.drawing('timelineChart').text.some(item => item.text === '00:00'));
 });
 
-test('blank token submission leaves credentials unchanged and performs no request', async () => {
-  const ui = dashboard();
-  let calls = 0;
-  ui.sandbox.fetch = async () => { calls++; throw new Error('Unexpected request'); };
-  ui.setupActionButtons();
-  ui.element('inputToken').value = '   ';
-  await ui.element('settingsForm').dispatch('submit');
-  assert.equal(calls, 0);
-  assert.match(ui.element('actionMessage').textContent, /current access settings have not changed/i);
-});
-
 test('automatic guest access enables collection before any manual token or cached session exists', () => {
   const ui = dashboard();
   ui.STATE.status = {
@@ -352,33 +404,6 @@ test('source links reject unexpected targets and direct-feed errors remain visib
   assert.equal(ui.element('btnPollNow').disabled, false);
 });
 
-test('removing a manual override restores automatic guest access while preserving current source attribution', async () => {
-  const ui = dashboard();
-  reportedFleet(ui, []);
-  ui.STATE.status.authMode = 'manual';
-  ui.STATE.status.tokenSource = 'stored';
-  const requests = [];
-  ui.sandbox.fetch = async (url, options) => {
-    requests.push({ url, options });
-    if (url === '/api/settings') {
-      ui.STATE.status = { ...ui.STATE.status, authMode: 'guest', tokenSource: 'guest', hasToken: false, connectionState: 'pending', dataProvider: 'community', coverage: 'stop-arrivals' };
-      return { ok: true, status: 200, json: async () => ({ success: true, authMode: 'guest' }) };
-    }
-    const payload = url === '/api/status' ? ui.STATE.status : url === '/api/live' ? { ...ui.STATE.live, buses: [], allFleet: [] }
-      : url.startsWith('/api/history') ? { routeData: [], campusData: [], availableDates: [] } : {};
-    return { ok: true, status: 200, json: async () => payload };
-  };
-  ui.setupActionButtons();
-  await ui.element('btnRemoveToken').dispatch('click');
-  assert.equal(requests[0].url, '/api/settings');
-  assert.deepEqual(JSON.parse(requests[0].options.body), { fms_token: '' });
-  assert.match(ui.element('actionMessage').textContent, /automatic guest access/i);
-  assert.doesNotMatch(ui.element('actionMessage').textContent, /fallback/i);
-  assert.match(ui.element('diagToken').textContent, /Automatic guest access/i);
-  assert.match(ui.element('diagSource').textContent, /community feed/i);
-  assert.equal(ui.element('btnPollNow').disabled, false);
-});
-
 test('failed manual collection displays its error and sends the administrator credential only on the mutation', async () => {
   const ui = dashboard();
   reportedFleet(ui, []);
@@ -399,3 +424,233 @@ test('failed manual collection displays its error and sends the administrator cr
   assert.ok(requests.slice(1).every(request => request.options.headers.Authorization === undefined));
   assert.equal(ui.element('btnPollNow').disabled, false, 'Poll control is restored after a failure');
 });
+
+test('selecting a specific route filter traces out the route path on the Leaflet map with active stop highlights', () => {
+  const ui = dashboard();
+  reportedFleet(ui, [
+    bus({ vehplate: 'PC1234A', route_code: 'A1', lat: 1.2917, lng: 103.7806 }),
+    bus({ vehplate: 'PC5678B', route_code: 'D1', lat: 1.3038, lng: 103.7738 })
+  ]);
+  ui.initLeafletMap();
+  assert.equal(ui.polylines.length, 0);
+
+  // Switch to route A1
+  ui.STATE.mapRouteFilter = 'A1';
+  ui.renderMapBuses();
+
+  // Polyline trace should be added (inner line + outer glow)
+  assert.ok(ui.polylines.length >= 2, 'Route polylines should be created for A1');
+  const innerLine = ui.polylines.find(p => p.options.weight === 3.5);
+  assert.ok(innerLine, 'Inner polyline exists');
+  assert.equal(innerLine.options.color, '#FB0101', 'Uses A1 official red color');
+  assert.match(innerLine.tooltip, /Service A1/);
+
+  // Stops served by A1 should be active, others dimmed
+  const activeStops = ui.markers.filter(m => typeof m.icon?.html === 'string' && m.icon.html.includes('active-route-stop'));
+  const dimmedStops = ui.markers.filter(m => typeof m.icon?.html === 'string' && m.icon.html.includes('dimmed-route-stop'));
+  assert.ok(activeStops.length > 0, 'Serviced stops are highlighted');
+  assert.ok(dimmedStops.length > 0, 'Non-serviced stops are dimmed');
+
+  // Legend trace indicator should be shown
+  assert.equal(ui.element('legendRouteTrace').hidden, false);
+  assert.match(ui.element('legendRouteName').textContent, /Service A1 path/);
+  assert.match(ui.element('mapDataMessage').textContent, /Traced normal route path for A1/);
+});
+
+test('switching map route filter back to all traces all routes across campus and restores standard stop pins', () => {
+  const ui = dashboard();
+  reportedFleet(ui, [bus({ vehplate: 'PC1234A', route_code: 'A1', lat: 1.2917, lng: 103.7806 })]);
+  ui.initLeafletMap();
+
+  ui.STATE.mapRouteFilter = 'A1';
+  ui.renderMapBuses();
+  assert.ok(ui.STATE.routeTraceGroup !== null);
+
+  // Switch back to 'all'
+  ui.STATE.mapRouteFilter = 'all';
+  ui.renderMapBuses();
+  assert.ok(ui.STATE.routeTraceGroup !== null, 'Route trace group exists for all routes');
+  assert.ok(ui.polylines.length >= 12, 'All campus routes (A1, A2, D1, D2, E, K) are traced');
+  assert.equal(ui.element('legendRouteTrace').hidden, true);
+  assert.match(ui.element('mapDataMessage').textContent, /All campus routes traced/);
+
+  // All stop pins should be standard pins (neither active nor dimmed)
+  const nonStandardStops = ui.markers.filter(m => typeof m.icon?.html === 'string' && (m.icon.html.includes('active-route-stop') || m.icon.html.includes('dimmed-route-stop')));
+  assert.equal(nonStandardStops.length, 0);
+});
+
+test('openVehicleDashboard populates telemetry details, route badge, and displays modal', () => {
+  const ui = dashboard();
+  const testBus = bus({
+    vehplate: 'PD658S',
+    route_code: 'A1',
+    lat: 1.2965,
+    lng: 103.7725,
+    speed: 25,
+    occupancy: 0.16,
+    ridership: 14,
+    capacity: 88,
+    timestamp: NOW
+  });
+  reportedFleet(ui, [testBus]);
+
+  ui.openVehicleDashboard('PD658S');
+
+  assert.equal(ui.element('vehicleDashboardModal').hidden, false);
+  assert.equal(ui.STATE.selectedVehiclePlate, 'PD658S');
+  assert.equal(ui.element('vehicleModalTitle').textContent, 'PD658S');
+  assert.equal(ui.element('vehicleModalRouteBadge').textContent, 'A1');
+  assert.match(ui.element('vehicleModalSubtitle').textContent, /Service A1 · Telemetry & 24-Hour Crowd Analytics/);
+  assert.match(ui.element('vehicleMetricRoute').textContent, /Service A1/);
+  assert.match(ui.element('vehicleMetricCrowd').textContent, /Low \(16%\)/);
+  assert.match(ui.element('vehicleMetricRidership').textContent, /14 \/ 88 pax/);
+  assert.match(ui.element('vehicleMetricSpeed').textContent, /25 km\/h/);
+  assert.match(ui.element('vehicleMetricGps').textContent, /1\.2965, 103\.7725/);
+});
+
+test('openVehicleDashboard initializes vehicle map and traces route path with pulsing marker', () => {
+  const ui = dashboard();
+  const testBus = bus({
+    vehplate: 'PD964H',
+    route_code: 'A2',
+    lat: 1.2989,
+    lng: 103.7744,
+    speed: 18,
+    occupancy: 0.85,
+    ridership: 75,
+    capacity: 88,
+    timestamp: NOW
+  });
+  reportedFleet(ui, [testBus]);
+
+  ui.openVehicleDashboard('PD964H');
+
+  assert.ok(ui.STATE.vehicleDetailMap !== null, 'Vehicle detail map instance initialized');
+  assert.ok(ui.STATE.vehicleMarker !== null, 'Vehicle marker created');
+  assert.ok(ui.STATE.vehicleRouteTraceGroup !== null, 'Route trace group created for bus route');
+  assert.ok(ui.polylines.length >= 2, 'Route polyline drawn (glow + main line)');
+  assert.match(ui.STATE.vehicleMarker.icon.html, /PD964H/);
+  assert.match(ui.STATE.vehicleMarker.icon.className, /bus-marker-detail-pulsing/);
+});
+
+test('openVehicleDashboard renders 24-hour crowd analytics chart with peak and avg stats', () => {
+  const ui = dashboard();
+  const testBus = bus({
+    vehplate: 'PD788A',
+    route_code: 'D1',
+    lat: 1.295,
+    lng: 103.778,
+    occupancy: 0.45,
+    ridership: 36,
+    capacity: 80,
+    timestamp: NOW
+  });
+  reportedFleet(ui, [testBus]);
+
+  const bucketTs = Math.floor(NOW / INTERVAL) * INTERVAL;
+  ui.STATE.history24h = {
+    queryRange: { end: NOW },
+    routeData: [
+      { bucket_ts: bucketTs, route_code: 'D1', avg_ridership: 40, avg_occupancy_pct: 50 },
+      { bucket_ts: bucketTs - INTERVAL, route_code: 'D1', avg_ridership: 60, avg_occupancy_pct: 75 }
+    ],
+    vehicleData: [
+      { bucket_ts: bucketTs, vehplate: 'PD788A', route_code: 'D1', avg_ridership: 36, avg_occupancy_pct: 45, sample_count: 1 }
+    ],
+    campusData: [
+      { bucket_ts: bucketTs, avg_ridership: 30, avg_occupancy_pct: 40 }
+    ]
+  };
+
+  ui.openVehicleDashboard('PD788A');
+
+  const records = ui.drawing('vehicleTimelineChart');
+  assert.ok(records !== undefined, 'Canvas drawing context accessed');
+  assert.ok(records.paths.length > 0, 'Paths drawn on vehicle timeline chart');
+  assert.match(ui.element('vehicleStatPeak').textContent, /Peak:/);
+  assert.match(ui.element('vehicleStatAvg').textContent, /24h Bus Avg:/);
+  assert.match(ui.element('vehicleStatActiveCount').textContent, /Observed: 1 interval/);
+});
+
+test('openVehicleDashboard renders observed hourly occupancy bar chart and stats', () => {
+  const ui = dashboard();
+  const testBus = bus({
+    vehplate: 'PD658S',
+    route_code: 'A1',
+    occupancy: 0.60,
+    ridership: 48,
+    capacity: 80,
+    timestamp: NOW
+  });
+  reportedFleet(ui, [testBus]);
+
+  const bucketTs = Math.floor(NOW / INTERVAL) * INTERVAL;
+  ui.STATE.history24h = {
+    queryRange: { end: NOW },
+    routeData: [],
+    vehicleData: [
+      { bucket_ts: bucketTs, vehplate: 'PD658S', route_code: 'A1', avg_ridership: 48, avg_occupancy_pct: 60, sample_count: 1 }
+    ],
+    campusData: []
+  };
+
+  ui.openVehicleDashboard('PD658S');
+
+  const hourlyRecords = ui.drawing('vehicleHourlyBarChart');
+  assert.ok(hourlyRecords !== undefined, 'Hourly canvas drawing context accessed');
+  assert.ok(hourlyRecords.rectangles.length > 0, 'Hourly bars drawn for vehicle');
+  assert.match(ui.element('vehicleHourlyPeak').textContent, /Peak Hour:/);
+  assert.match(ui.element('vehicleHourlyAvg').textContent, /Active Avg:/);
+  assert.match(ui.element('vehicleHourlyActiveHours').textContent, /Operating: 1 of 24 hrs/);
+});
+
+test('closeVehicleDashboard hides modal and resets selected vehicle plate', () => {
+  const ui = dashboard();
+  reportedFleet(ui, [bus({ vehplate: 'PD778D', route_code: 'D2' })]);
+
+  ui.openVehicleDashboard('PD778D');
+  assert.equal(ui.element('vehicleDashboardModal').hidden, false);
+  assert.equal(ui.STATE.selectedVehiclePlate, 'PD778D');
+
+  ui.closeVehicleDashboard();
+  assert.equal(ui.element('vehicleDashboardModal').hidden, true);
+  assert.equal(ui.STATE.selectedVehiclePlate, null);
+});
+
+test('setupVehicleDashboardInteractivity allows toggling metrics between crowd and pax', async () => {
+  const ui = dashboard();
+  reportedFleet(ui, [bus({ vehplate: 'PD658S', route_code: 'A1' })]);
+  ui.openVehicleDashboard('PD658S');
+  ui.setupVehicleDashboardInteractivity();
+
+  assert.equal(ui.STATE.vehicleDetailMetric, 'crowd');
+
+  await ui.element('btnVehicleMetricPax').dispatch('click');
+  assert.equal(ui.STATE.vehicleDetailMetric, 'exact');
+  assert.equal(ui.element('btnVehicleMetricPax').classList.contains('active'), true);
+
+  await ui.element('btnVehicleMetricCrowd').dispatch('click');
+  assert.equal(ui.STATE.vehicleDetailMetric, 'crowd');
+});
+
+test('setupVehicleDashboardInteractivity jump buttons change filters and switch tabs', async () => {
+  const ui = dashboard();
+  reportedFleet(ui, [bus({ vehplate: 'PD658S', route_code: 'A1' })]);
+  ui.openVehicleDashboard('PD658S');
+  ui.setupVehicleDashboardInteractivity();
+
+  // Jump to map
+  await ui.element('btnVehicleJumpToMap').dispatch('click');
+  assert.equal(ui.element('vehicleDashboardModal').hidden, true);
+  assert.equal(ui.STATE.mapRouteFilter, 'A1');
+  assert.equal(ui.STATE.mapBusFilter, 'PD658S');
+
+  // Re-open and jump to analytics
+  ui.openVehicleDashboard('PD658S');
+  await ui.element('btnVehicleJumpToAnalytics').dispatch('click');
+  assert.equal(ui.element('vehicleDashboardModal').hidden, true);
+  assert.ok(ui.STATE.activeRoutes.has('A1'));
+});
+
+
+

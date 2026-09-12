@@ -89,13 +89,13 @@ test('Turso Cloud bootstrap, polling and cold starts work with read-only user_ve
   const first = durableDatabase(t, tursoCloudClient);
   await assert.rejects(first.client.execute('PRAGMA user_version = 4'), /SQL not allowed/);
   const timestamp = Date.now() - 1000;
-  await first.db.setSetting('fms_token', 'cloud-test-token');
+  await first.db.setSetting('test_setting', 'cloud-test-token');
   await first.db.recordPoll([bus('CLOUD-FIRST')], timestamp - 1000);
   assert.equal((await first.client.execute('PRAGMA user_version')).rows[0].user_version, 0);
   first.db.close();
 
   const restarted = first.open();
-  assert.equal(await restarted.db.getSetting('fms_token'), 'cloud-test-token');
+  assert.equal(await restarted.db.getSetting('test_setting'), 'cloud-test-token');
   assert.equal((await restarted.db.getLatestPoll(timestamp)).records_count, 1);
   await restarted.db.recordPoll([bus('CLOUD-RESTARTED')], timestamp);
   const second = first.open();
@@ -108,14 +108,14 @@ test('Turso Cloud bootstrap, polling and cold starts work with read-only user_ve
 test('a compatible legacy version 4 database is adopted without losing observations or settings', async t => {
   const first = durableDatabase(t);
   const timestamp = Date.now() - 1000;
-  await first.db.setSetting('fms_token', 'legacy-test-token');
+  await first.db.setSetting('test_setting', 'legacy-test-token');
   await first.db.recordPoll([bus('LEGACY')], timestamp);
   // Emulate an import created by the previous version of the application.
   await first.client.batch(['DROP TABLE bus_schema_version', 'PRAGMA user_version = 4'], 'write');
   first.db.close();
 
   const imported = first.open();
-  assert.equal(await imported.db.getSetting('fms_token'), 'legacy-test-token');
+  assert.equal(await imported.db.getSetting('test_setting'), 'legacy-test-token');
   assert.equal(await imported.db.getTotalSnapshotsCount(), 1);
   assert.equal((await imported.db.getLatestLiveBuses(timestamp))[0].vehplate, 'LEGACY');
   assert.equal((await imported.client.execute('SELECT version FROM bus_schema_version WHERE id = 1')).rows[0].version, 4);
@@ -126,12 +126,12 @@ test('a compatible legacy version 4 database is adopted without losing observati
 test('independent remote database instances share settings and observations across restarts', async t => {
   const first = durableDatabase(t);
   const timestamp = Date.now() - 1000;
-  await first.db.setSetting('fms_token', 'stored-test-token');
+  await first.db.setSetting('test_setting', 'stored-test-token');
   await first.db.recordPoll([bus('DURABLE', { ridership: 0, occupancy: 0 })], timestamp, {
     dataProvider: 'univus', coverage: 'route-fleet'
   });
   const second = first.open();
-  assert.equal(await second.db.getSetting('fms_token'), 'stored-test-token');
+  assert.equal(await second.db.getSetting('test_setting'), 'stored-test-token');
   assert.equal((await second.db.getLatestLiveBuses(timestamp))[0].vehplate, 'DURABLE');
   await first.db.close();
   const restarted = first.open();
@@ -263,8 +263,8 @@ test('a transient remote schema initialization failure can recover on the next r
     }
   });
   const db = new RemoteBusDatabase({ client: interruptedClient });
-  await assert.rejects(db.getSetting('fms_token'), /Temporary database connection failure/);
-  assert.equal(await db.getSetting('fms_token'), '');
+  await assert.rejects(db.getSetting('last_polled_at'), /Temporary database connection failure/);
+  assert.equal(await db.getSetting('last_polled_at'), '0');
   await db.recordPoll([bus('AFTER-RETRY')], Date.now() - 1000);
   assert.equal(await db.getTotalSnapshotsCount(), 1);
 });
@@ -369,7 +369,7 @@ test('remote initialization is lazy and concurrent first reads share one bootstr
   };
   const db = new RemoteBusDatabase({ client: trackedClient });
   assert.equal(batches, 0);
-  assert.deepEqual(await Promise.all([db.getSetting('fms_token'), db.getLatestPoll(), db.getTotalSnapshotsCount()]), ['', null, 0]);
+  assert.deepEqual(await Promise.all([db.getSetting('last_polled_at'), db.getLatestPoll(), db.getTotalSnapshotsCount()]), ['0', null, 0]);
   assert.equal(batches, 2, 'One schema inspection and one bootstrap must serve every first read');
   assert.equal(await db.getSetting('last_polled_at'), '0');
   assert.equal(batches, 2);
@@ -489,13 +489,11 @@ test('serverless handler awaits durable collection, reads, settings, export and 
   assert.equal(providerCalls, 1, 'Public reads must not create a collection');
 
   const settings = await invoke(handler, '/api/settings', {
-    method: 'POST', token: env.ADMIN_TOKEN, body: { fms_token: 'saved-through-http' }
+    method: 'POST', token: env.ADMIN_TOKEN, body: {}
   });
   assert.equal(settings.status, 200);
   assert.equal(settings.json.success, true);
-  assert.doesNotMatch(settings.data, /saved-through-http/);
   const second = open();
-  assert.equal(await second.db.getSetting('fms_token'), 'saved-through-http');
   const cleared = await invoke(handler, '/api/clear-all', { method: 'POST', token: env.ADMIN_TOKEN });
   assert.equal(cleared.status, 200);
   assert.equal(cleared.json.clearedCount, 1);

@@ -1,4 +1,4 @@
-﻿import { GuestTokenProvider } from '../src/univus_auth.js';
+import { GuestTokenProvider } from '../src/univus_auth.js';
 import { UnivusClient } from '../src/univus_client.js';
 import { fetchAllLiveBuses, ProviderError } from '../src/api_client.js';
 import { ROUTE_CODES } from '../src/routes.js';
@@ -10,7 +10,7 @@ const route = ROUTE_CODES[0];
 const forced = process.argv.includes('--connectx') ? 'connectx' : process.argv.includes('--direct') ? 'univus' : null;
 const env = forced ? { ...process.env, BUS_PROVIDER: forced } : process.env;
 try {
-  let source = getProviderConfig(env, Boolean(env.FMS_TOKEN?.trim()));
+  let source = getProviderConfig(env);
   let records;
   if (source.dataProvider === 'univus') {
     const client = new UnivusClient();
@@ -20,12 +20,12 @@ try {
       records = await client.fetchBuses({ routes: [route] });
     } catch (error) {
       if ((env.BUS_PROVIDER?.trim() || 'auto') !== 'auto' || !(error instanceof ProviderError)) throw error;
-      source = getProviderConfig(env, false, true);
+      source = getProviderConfig(env, true);
       console.log(JSON.stringify({ stage: 'direct-feed', success: false, code: error.code, warning: source.providerWarning }));
     }
   } else if (source.dataProvider === 'connectx') {
     const provider = new GuestTokenProvider();
-    const token = env.FMS_TOKEN?.trim() || await provider.getToken();
+    const token = await provider.getToken();
     console.log(JSON.stringify({ stage: 'authentication', success: true, authMode: source.authMode,
       tokenExpiresAt: source.authMode === 'guest' ? provider.getStatus().tokenExpiresAt : null }));
     records = await fetchAllLiveBuses(token, { routes: [route] });

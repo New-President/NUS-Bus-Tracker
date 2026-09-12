@@ -36,8 +36,9 @@ const STATE = {
   fleetFilter: 'all', fleetStatusFilter: 'all', fleetSearch: '', liveBuses: [], allFleet: [], live: {},
   history24h: { routeData: [], campusData: [] }, analytics: {}, status: {}, errors: {},
   mapRouteFilter: 'all', mapBusFilter: 'all', mapCrowdFilter: 'all', mapShowStops: true,
-  leafletMap: null, busMarkers: new Map(), stopMarkers: [], hoveredIndex: null,
-  refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, saving: false, adminToken: ''
+  leafletMap: null, busMarkers: new Map(), stopMarkers: [], routeTraceGroup: null, tracedRoute: 'all', hoveredIndex: null,
+  selectedVehiclePlate: null, vehicleDetailMap: null, vehicleDetailMetric: 'crowd', vehicleMarker: null, vehicleRouteTraceGroup: null, vehicleHoveredIndex: null,
+  refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: ''
 };
 const ROUTE_COLORS = { CAMPUS_AVG: '#38bdf8', A1: '#FB0101', A2: '#FBAE17', D1: '#9E005D', D2: '#6A1B9A', E: '#00838F', K: '#2E7D32' };
 function routeColor(code) {
@@ -162,6 +163,9 @@ async function refreshAllData() {
 function renderAll() {
   renderRouteFilters(); updateAvailableDatesDropdown(); renderStatus(); renderSummaryCards();
   renderTimelineChart(); renderOptimizerView(); renderFleetGrid(); updateMapBusSelectDropdown(); renderMapBuses();
+  if (STATE.selectedVehiclePlate && $('vehicleDashboardModal') && !$('vehicleDashboardModal').hidden) {
+    openVehicleDashboard(STATE.selectedVehiclePlate);
+  }
 }
 
 function renderStatus() {
@@ -201,15 +205,10 @@ function renderStatus() {
   setText('diagLastAttempt', `${formatTime(status.lastAttemptAt, true)}${status.lastAttemptAt ? ' SGT' : ''}`);
   setText('diagLastError', status.lastError || 'None');
   setText('diagStorage', status.storage === 'turso' ? 'Persistent shared history' : 'Unknown');
-  setText('diagToken', guest ? 'Automatic guest access · Daily renewal' : status.authMode === 'public' ? 'Public arrivals · No token required' : status.tokenSource === 'environment' ? 'Manual override managed by the server' : 'Stored manual override');
+  setText('diagToken', guest ? 'Automatic guest access · Daily renewal' : status.authMode === 'public' ? 'Public arrivals · No token required' : 'Direct route feed');
   const sessionRenewal = guest && (feed.isUnivus || status.sessionRenewAt);
   setText('diagSessionTimingLabel', sessionRenewal ? 'Guest session:' : 'Guest session expiry:');
   setText('diagTokenExpiry', sessionRenewal ? status.sessionRenewAt ? `Renews by ${formatTime(status.sessionRenewAt, true)} SGT` : status.hasToken ? 'Renews automatically each day' : 'Session opens on the next pull' : guest ? status.tokenExpiresAt ? `${formatTime(status.tokenExpiresAt, true)} SGT` : 'Session opens on the next pull' : 'Not applicable');
-  const locked = status.settingsEditable === false || status.tokenSource === 'environment';
-  $('inputToken').disabled = locked || STATE.saving;
-  $('btnSaveSettings').disabled = locked || STATE.saving;
-  $('btnRemoveToken').disabled = locked || STATE.saving || status.tokenSource !== 'stored';
-  setText('tokenHint', locked ? 'A manual override is managed by the server environment. Remove that server setting to restore automatic provider selection.' : 'Optional: use an authorized ConnectX session token to select the direct route feed. Saving replaces the stored override; an empty field leaves it unchanged.');
   $('adminTokenGroup').hidden = !status.adminRequired;
   for (const id of ['btnPollNow', 'btnSettingsPollNow']) {
     $(id).disabled = STATE.polling || status.canPoll === false;
@@ -260,7 +259,7 @@ function routeCodes() {
 function renderRouteFilters() {
   const codes = routeCodes();
   for (const code of codes) if (!STATE.seenRoutes.has(code)) { STATE.seenRoutes.add(code); STATE.activeRoutes.add(code); }
-  $('routeFilterPills').innerHTML = ['CAMPUS_AVG', ...codes].map(code => `<button type="button" class="route-pill ${STATE.activeRoutes.has(code) ? 'active' : ''}" data-route="${escapeHtml(code)}" aria-pressed="${STATE.activeRoutes.has(code)}" style="${STATE.activeRoutes.has(code) ? `background-color:${routeColor(code)}` : ''}"><span class="route-pill-dot" style="background-color:${routeColor(code)}"></span>${escapeHtml(code === 'CAMPUS_AVG' ? 'Observed Average' : code)}</button>`).join('');
+  $('routeFilterPills').innerHTML = ['CAMPUS_AVG', ...codes].map(code => `<button type="button" class="route-pill ${STATE.activeRoutes.has(code) ? 'active' : ''}" data-route="${escapeHtml(code)}" aria-pressed="${STATE.activeRoutes.has(code)}" style="--c:${routeColor(code)}"><span class="route-pill-dot"></span>${escapeHtml(code === 'CAMPUS_AVG' ? 'Observed Average' : code)}</button>`).join('');
   for (const [id, attribute, selected, className] of [
     ['mapRouteFilterPills', 'map-route', STATE.mapRouteFilter, 'map-pill'],
     ['fleetRouteGroup', 'fleet-filter', STATE.fleetFilter, 'btn btn-sm btn-secondary']
@@ -321,7 +320,7 @@ function renderTimelineChart() {
     ctx.strokeStyle = '#273553'; ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(width - padding.right, y); ctx.stroke();
     ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}${STATE.currentView === 'exact' ? '' : '%'}`, padding.left - 8, y + 4);
   }
-  ctx.textAlign = 'left'; ctx.fillText(STATE.currentView === 'exact' ? 'Average passengers per bus' : 'Reported capacity occupancy (%)', padding.left, 16);
+  ctx.textAlign = 'left'; ctx.fillText(STATE.currentView === 'exact' ? 'Average passengers per bus' : 'Crowd level (%)', padding.left, 16);
   const labelStep = chartW < 600 ? 36 : 24;
   ctx.textAlign = 'center';
   for (let i = 0; i < 144; i += labelStep) ctx.fillText(formatTime(buckets[i].timestamp), xAt(i), height - 27);
@@ -465,7 +464,7 @@ function renderFleetGrid() {
   $('fleetGrid').innerHTML = buses.map(bus => {
     const status = fleetStatus(bus), active = status === 'active', level = busCrowd(bus);
     const label = status === 'stale' || stale ? 'Stale · Last known reading' : active ? 'Reported in latest pull' : 'Not in latest pull';
-    return `<article class="bus-card ${!active || stale ? 'bus-card-inactive' : ''}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${active && !stale ? 'badge-info' : 'badge-secondary'}">${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span></div>${busReadingsMarkup(bus)}${!active ? '<p class="form-hint">Retained observation; current service status unknown.</p>' : ''}</article>`;
+    return `<article class="bus-card ${!active || stale ? 'bus-card-inactive' : ''}" data-plate="${escapeHtml(bus.vehplate)}" tabindex="0" role="button" aria-label="Open vehicle dashboard for ${escapeHtml(bus.vehplate)}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${active && !stale ? 'badge-info' : 'badge-secondary'}">${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span></div>${busReadingsMarkup(bus)}${!active ? '<p class="form-hint">Retained observation; current service status unknown.</p>' : ''}<span class="bus-card-click-hint">Click to view bus dashboard →</span></article>`;
   }).join('');
 }
 
@@ -491,37 +490,270 @@ const NUS_BUS_STOPS = [
   { name: 'University Health Centre (UHC)', lat: 1.2988, lng: 103.7761 },
   { name: 'Kent Ridge Bus Terminal', lat: 1.2939, lng: 103.7699 }
 ];
+
+// Road-aligned normal route paths for Kent Ridge campus routes
+const NUS_ROUTE_PATHS = {
+  A1: [
+    [1.2917, 103.7806], [1.2913, 103.7812], [1.2915, 103.7823], [1.2922, 103.7840],
+    [1.2949, 103.7845], [1.2958, 103.7836], [1.2968, 103.7825], [1.2974, 103.7811],
+    [1.2973, 103.7795], [1.2977, 103.7775], [1.2988, 103.7761], [1.2989, 103.7752],
+    [1.2987, 103.7749], [1.2980, 103.7735], [1.2965, 103.7725], [1.2960, 103.7720],
+    [1.2944, 103.7712], [1.2938, 103.7718], [1.2933, 103.7725], [1.2931, 103.7736],
+    [1.2934, 103.7749], [1.2928, 103.7752], [1.2920, 103.7780], [1.2917, 103.7806]
+  ],
+  A2: [
+    [1.2917, 103.7806], [1.2920, 103.7780], [1.2928, 103.7752], [1.2934, 103.7749],
+    [1.2931, 103.7736], [1.2933, 103.7725], [1.2952, 103.7709], [1.2960, 103.7720],
+    [1.2965, 103.7725], [1.2974, 103.7728], [1.2980, 103.7735], [1.2989, 103.7744],
+    [1.2989, 103.7752], [1.2988, 103.7761], [1.2977, 103.7775], [1.2973, 103.7795],
+    [1.2974, 103.7811], [1.2968, 103.7825], [1.2958, 103.7836], [1.2949, 103.7845],
+    [1.2922, 103.7840], [1.2915, 103.7823], [1.2913, 103.7812], [1.2917, 103.7806]
+  ],
+  D1: [
+    [1.3038, 103.7738], [1.3032, 103.7743], [1.3022, 103.7741], [1.3015, 103.7733],
+    [1.3000, 103.7738], [1.2989, 103.7744], [1.2980, 103.7735], [1.2965, 103.7725],
+    [1.2960, 103.7720], [1.2944, 103.7712], [1.2938, 103.7718], [1.2933, 103.7725],
+    [1.2931, 103.7736], [1.2934, 103.7749], [1.2928, 103.7752], [1.2933, 103.7725],
+    [1.2952, 103.7709], [1.2974, 103.7728], [1.2980, 103.7735], [1.2987, 103.7749],
+    [1.3000, 103.7738], [1.3015, 103.7733], [1.3022, 103.7741], [1.3032, 103.7743],
+    [1.3038, 103.7738]
+  ],
+  D2: [
+    [1.3038, 103.7738], [1.3032, 103.7743], [1.3022, 103.7741], [1.3015, 103.7733],
+    [1.3000, 103.7738], [1.2988, 103.7761], [1.2977, 103.7775], [1.2973, 103.7795],
+    [1.2974, 103.7811], [1.2968, 103.7825], [1.2958, 103.7836], [1.2949, 103.7845],
+    [1.2922, 103.7840], [1.2915, 103.7823], [1.2913, 103.7812], [1.2917, 103.7806],
+    [1.2913, 103.7812], [1.2915, 103.7823], [1.2922, 103.7840], [1.2949, 103.7845],
+    [1.2958, 103.7836], [1.2968, 103.7825], [1.2974, 103.7811], [1.2973, 103.7795],
+    [1.2977, 103.7775], [1.2988, 103.7761], [1.2989, 103.7752], [1.2987, 103.7749],
+    [1.3000, 103.7738], [1.3015, 103.7733], [1.3022, 103.7741], [1.3032, 103.7743],
+    [1.3038, 103.7738]
+  ],
+  E: [
+    [1.3038, 103.7738], [1.3032, 103.7743], [1.3022, 103.7741], [1.3015, 103.7733],
+    [1.3005, 103.7728], [1.2988, 103.7718], [1.2965, 103.7725], [1.2960, 103.7720],
+    [1.2938, 103.7718], [1.2931, 103.7736], [1.2934, 103.7749], [1.2928, 103.7752],
+    [1.2933, 103.7725], [1.2952, 103.7709], [1.2974, 103.7728], [1.2988, 103.7718],
+    [1.3005, 103.7728], [1.3015, 103.7733], [1.3022, 103.7741], [1.3032, 103.7743],
+    [1.3038, 103.7738]
+  ],
+  K: [
+    [1.2917, 103.7806], [1.2913, 103.7812], [1.2915, 103.7823], [1.2922, 103.7840],
+    [1.2949, 103.7845], [1.2958, 103.7836], [1.2968, 103.7825], [1.2974, 103.7811],
+    [1.2973, 103.7795], [1.2977, 103.7775], [1.2988, 103.7761], [1.2989, 103.7752],
+    [1.2987, 103.7749], [1.2980, 103.7735], [1.2965, 103.7725], [1.2960, 103.7720],
+    [1.2944, 103.7712], [1.2940, 103.7705], [1.2939, 103.7699], [1.2940, 103.7705],
+    [1.2952, 103.7709], [1.2974, 103.7728], [1.2980, 103.7735], [1.2989, 103.7744],
+    [1.2989, 103.7752], [1.2988, 103.7761], [1.2977, 103.7775], [1.2973, 103.7795],
+    [1.2974, 103.7811], [1.2968, 103.7825], [1.2958, 103.7836], [1.2949, 103.7845],
+    [1.2922, 103.7840], [1.2915, 103.7823], [1.2913, 103.7812], [1.2917, 103.7806]
+  ]
+};
+
+const NUS_ROUTE_STOPS = {
+  A1: new Set([
+    "Prince George's Park (PGP)", 'Kent Ridge MRT (Exit A)', 'Faculty of Science (LT27)',
+    'University Health Centre (UHC)', 'Opposite YIH', 'Central Library (CLB)',
+    'Lecture Theatre 13 (LT13)', 'Faculty of Arts (AS5)', 'Business School (BIZ 2)',
+    'Opp Hon Sui Sen Library'
+  ]),
+  A2: new Set([
+    "Prince George's Park (PGP)", 'Opp Hon Sui Sen Library', 'Business School (BIZ 2)',
+    'Opp NUSS Guild House', 'Ventus (Opp LT13)', 'Information Technology (IT)',
+    'Yusof Ishak House (YIH)', 'University Health Centre (UHC)',
+    'Faculty of Science (LT27)', 'Kent Ridge MRT (Exit A)'
+  ]),
+  D1: new Set([
+    'University Town (UTown)', 'NUS Museum', 'Yusof Ishak House (YIH)',
+    'Central Library (CLB)', 'Lecture Theatre 13 (LT13)', 'Faculty of Arts (AS5)',
+    'Business School (BIZ 2)', 'Opp Hon Sui Sen Library', 'Opp NUSS Guild House',
+    'Ventus (Opp LT13)', 'Information Technology (IT)', 'Opposite YIH'
+  ]),
+  D2: new Set([
+    'University Town (UTown)', 'NUS Museum', 'University Health Centre (UHC)',
+    'Faculty of Science (LT27)', 'Kent Ridge MRT (Exit A)', "Prince George's Park (PGP)",
+    'Opposite YIH'
+  ]),
+  E: new Set([
+    'University Town (UTown)', 'NUS Museum', 'Central Library (CLB)',
+    'Faculty of Arts (AS5)', 'Business School (BIZ 2)', 'Opp Hon Sui Sen Library',
+    'Opp NUSS Guild House', 'Ventus (Opp LT13)', 'Information Technology (IT)'
+  ]),
+  K: new Set([
+    "Prince George's Park (PGP)", 'Kent Ridge MRT (Exit A)', 'Faculty of Science (LT27)',
+    'University Health Centre (UHC)', 'Opposite YIH', 'Central Library (CLB)',
+    'Lecture Theatre 13 (LT13)', 'Kent Ridge Bus Terminal', 'Ventus (Opp LT13)',
+    'Information Technology (IT)', 'Yusof Ishak House (YIH)'
+  ])
+};
+
 function initLeafletMap() {
   if (typeof L === 'undefined') { setText('mapDataMessage', 'Map library unavailable. Fleet readings remain available in the Fleet tab.'); return; }
   STATE.leafletMap = L.map('leafletMap', { center: [1.2966, 103.7764], zoom: 15, minZoom: 10, maxZoom: 19 });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>', subdomains: 'abcd', maxZoom: 19
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, TomTom',
+    maxZoom: 19,
+    className: 'map-tiles-dark'
   }).on('tileerror', () => setText('mapDataMessage', 'Background map tiles are unavailable. Reported vehicle coordinates are still shown.')).addTo(STATE.leafletMap);
   renderBusStopsOnMap();
+  if (STATE.mapRouteFilter !== 'all') renderRouteTraceOnMap(true);
 }
+
 function renderBusStopsOnMap() {
   if (!STATE.leafletMap) return;
   STATE.stopMarkers.forEach(marker => STATE.leafletMap.removeLayer(marker)); STATE.stopMarkers = [];
   if (!STATE.mapShowStops) return;
+  const activeRoute = STATE.mapRouteFilter;
+  const hasRouteFilter = activeRoute !== 'all' && Boolean(NUS_ROUTE_STOPS[activeRoute]);
+  const activeStops = hasRouteFilter ? NUS_ROUTE_STOPS[activeRoute] : null;
+  const routeClr = hasRouteFilter ? routeColor(activeRoute) : '#38bdf8';
+
   for (const stop of NUS_BUS_STOPS) {
-    const icon = L.divIcon({ className: 'bus-stop-pin-wrapper', html: `<div class="bus-stop-pin" title="${escapeHtml(stop.name)}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] });
+    const isStopOnRoute = !hasRouteFilter || activeStops.has(stop.name);
+    const pinClass = !hasRouteFilter
+      ? 'bus-stop-pin'
+      : isStopOnRoute
+        ? 'bus-stop-pin active-route-stop'
+        : 'bus-stop-pin dimmed-route-stop';
+    const pinStyle = hasRouteFilter && isStopOnRoute ? ` style="--c:${routeClr}"` : '';
+    const icon = L.divIcon({
+      className: 'bus-stop-pin-wrapper',
+      html: `<div class="${pinClass}"${pinStyle} title="${escapeHtml(stop.name)}"></div>`,
+      iconSize: [12, 12],
+      iconAnchor: [6, 6]
+    });
     const marker = L.marker([stop.lat, stop.lng], { icon }).addTo(STATE.leafletMap);
-    marker.bindPopup(`<div class="map-popup-card"><strong>${escapeHtml(stop.name)}</strong><p>Campus reference location</p></div>`);
+    const routeStatusHtml = hasRouteFilter
+      ? `<p class="map-popup-sub"><span style="color:${routeClr};font-weight:700">Service ${escapeHtml(activeRoute)}</span>: ${isStopOnRoute ? 'Serviced Stop' : 'Not Serviced'}</p>`
+      : '<p>Campus reference location</p>';
+    marker.bindPopup(`<div class="map-popup-card"><strong>${escapeHtml(stop.name)}</strong>${routeStatusHtml}</div>`);
     STATE.stopMarkers.push(marker);
   }
 }
+
+function renderRouteTraceOnMap(force = false) {
+  if (!STATE.leafletMap) return;
+  const route = STATE.mapRouteFilter;
+  if (!force && route === STATE.tracedRoute) return;
+
+  const legendTrace = $('legendRouteTrace');
+  const routeChanged = STATE.tracedRoute !== route;
+
+  if (STATE.routeTraceGroup) {
+    STATE.leafletMap.removeLayer(STATE.routeTraceGroup);
+    STATE.routeTraceGroup = null;
+  }
+
+  if (route === 'all') {
+    STATE.tracedRoute = 'all';
+    if (legendTrace) legendTrace.hidden = true;
+    const layers = [];
+    for (const [code, coords] of Object.entries(NUS_ROUTE_PATHS)) {
+      const color = routeColor(code);
+      const glow = L.polyline(coords, {
+        color,
+        weight: 6,
+        opacity: 0.22,
+        lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false
+      });
+      const line = L.polyline(coords, {
+        color,
+        weight: 3,
+        opacity: 0.85,
+        lineCap: 'round',
+        lineJoin: 'round'
+      });
+      line.bindTooltip(`<div class="route-trace-tooltip"><strong style="color:${color}">Service ${escapeHtml(code)}</strong> · Standard Route Path</div>`, {
+        sticky: true,
+        className: 'leaflet-route-tooltip'
+      });
+      layers.push(glow, line);
+    }
+    STATE.routeTraceGroup = (L.layerGroup ? L.layerGroup(layers) : layers[0]).addTo(STATE.leafletMap);
+    renderBusStopsOnMap();
+    return;
+  }
+
+  if (!NUS_ROUTE_PATHS[route]) {
+    STATE.tracedRoute = route;
+    if (legendTrace) legendTrace.hidden = true;
+    renderBusStopsOnMap();
+    return;
+  }
+
+  const coords = NUS_ROUTE_PATHS[route];
+  const color = routeColor(route);
+
+  // Outer ambient glow polyline
+  const glow = L.polyline(coords, {
+    color,
+    weight: 9,
+    opacity: 0.32,
+    lineCap: 'round',
+    lineJoin: 'round',
+    interactive: false
+  });
+
+  // Inner crisp illuminated route line
+  const line = L.polyline(coords, {
+    color,
+    weight: 3.5,
+    opacity: 0.95,
+    lineCap: 'round',
+    lineJoin: 'round'
+  });
+
+  line.bindTooltip(`<div class="route-trace-tooltip"><strong style="color:${color}">Service ${escapeHtml(route)}</strong> · Standard Route Path</div>`, {
+    sticky: true,
+    className: 'leaflet-route-tooltip'
+  });
+
+  STATE.routeTraceGroup = (L.layerGroup ? L.layerGroup([glow, line]) : glow).addTo(STATE.leafletMap);
+  STATE.tracedRoute = route;
+
+  if (legendTrace) {
+    legendTrace.hidden = false;
+    const legendLine = $('legendRouteLine');
+    const legendName = $('legendRouteName');
+    if (legendLine) {
+      if (typeof legendLine.style?.setProperty === 'function') legendLine.style.setProperty('--c', color);
+      if (legendLine.style) legendLine.style.backgroundColor = color;
+    }
+    if (legendName) legendName.textContent = `Service ${route} path`;
+  }
+
+  renderBusStopsOnMap();
+
+  if (routeChanged) {
+    try {
+      const bounds = line.getBounds();
+      if (bounds && typeof bounds.isValid === 'function' && bounds.isValid()) {
+        STATE.leafletMap.fitBounds(bounds, { padding: [36, 36], maxZoom: 16 });
+      }
+    } catch {}
+  }
+}
+
 function renderMapBuses() {
   if (!STATE.leafletMap) return;
+  renderRouteTraceOnMap();
   const candidates = STATE.liveBuses.filter(bus => (STATE.mapRouteFilter === 'all' || bus.route_code === STATE.mapRouteFilter) &&
     (STATE.mapBusFilter === 'all' || bus.vehplate === STATE.mapBusFilter) && (STATE.mapCrowdFilter === 'all' || busCrowd(bus).level === STATE.mapCrowdFilter));
   const buses = candidates.filter(hasCoordinates), current = new Set(), stale = telemetryStale();
+  const routeTraceNotice = STATE.mapRouteFilter === 'all'
+    ? 'All campus routes traced. '
+    : NUS_ROUTE_PATHS[STATE.mapRouteFilter]
+      ? `Traced normal route path for ${escapeHtml(STATE.mapRouteFilter)}. `
+      : '';
   setText('mapActiveBusesBadge', `${buses.length} of ${STATE.liveBuses.length} vehicles shown`);
-  setText('mapDataMessage', `${stale ? 'Last known locations. ' : ''}${!STATE.liveBuses.length ? 'No vehicles reported. ' : ''}${candidates.length - buses.length ? `${candidates.length - buses.length} matching vehicles have no GPS reading. ` : ''}${feedContext().isPublic ? 'Only vehicles appearing in the monitored-stop arrivals feed are included. ' : ''}Locations update only when the live feed is collected.`);
+  setText('mapDataMessage', `${routeTraceNotice}${stale ? 'Last known locations. ' : ''}${!STATE.liveBuses.length ? 'No vehicles reported. ' : ''}${candidates.length - buses.length ? `${candidates.length - buses.length} matching vehicles have no GPS reading. ` : ''}${feedContext().isPublic ? 'Only vehicles appearing in the monitored-stop arrivals feed are included. ' : ''}Locations update only when the live feed is collected.`);
   for (const bus of buses) {
     current.add(bus.vehplate);
     const level = busCrowd(bus), color = routeColor(bus.route_code);
     const icon = L.divIcon({ className: 'bus-custom-marker', html: `<div class="bus-marker-node ${stale ? 'is-stale' : ''}"><div class="bus-marker-badge" style="background-color:${color};border-color:${level.color}">🚌 ${escapeHtml(bus.route_code)}</div><div class="bus-plate-subtext">${escapeHtml(bus.vehplate)}</div></div>`, iconSize: [56, 38], iconAnchor: [28, 19] });
-    const popup = `<div class="map-popup-card"><div class="map-popup-header"><span class="map-popup-route" style="background-color:${color}">${escapeHtml(bus.route_code)}</span><strong>${escapeHtml(bus.vehplate)}</strong></div><div class="bus-card-status"><span class="badge ${stale ? 'badge-secondary' : level.badge}">${stale ? 'Last known reading' : `${level.label} occupancy`}</span></div>${busReadingsMarkup(bus)}</div>`;
+    const popup = `<div class="map-popup-card"><div class="map-popup-header"><span class="map-popup-route" style="background-color:${color}">${escapeHtml(bus.route_code)}</span><strong>${escapeHtml(bus.vehplate)}</strong></div><div class="bus-card-status"><span class="badge ${stale ? 'badge-secondary' : level.badge}">${stale ? 'Last known reading' : `${level.label} occupancy`}</span></div>${busReadingsMarkup(bus)}<div class="map-popup-action"><button type="button" class="btn btn-xs btn-primary btn-open-bus-dashboard" data-plate="${escapeHtml(bus.vehplate)}">Open Bus Dashboard ↗</button></div></div>`;
     let marker = STATE.busMarkers.get(bus.vehplate);
     if (marker) marker.setLatLng([bus.lat, bus.lng]).setIcon(icon).setPopupContent(popup);
     else { marker = L.marker([bus.lat, bus.lng], { icon }).addTo(STATE.leafletMap).bindPopup(popup); STATE.busMarkers.set(bus.vehplate, marker); }
@@ -543,6 +775,666 @@ function updateAvailableDatesDropdown() {
   $('inputSpecificDate').max = formatLocalDate();
   $('inputSpecificDate').value = STATE.selectedDate;
 }
+
+function openVehicleDashboard(vehplate) {
+  const bus = STATE.allFleet.find(b => b.vehplate === vehplate) ||
+              STATE.liveBuses.find(b => b.vehplate === vehplate);
+  if (!bus) return;
+  STATE.selectedVehiclePlate = vehplate;
+
+  const modal = $('vehicleDashboardModal');
+  if (!modal) return;
+  modal.hidden = false;
+
+  const color = routeColor(bus.route_code);
+  const badge = $('vehicleModalRouteBadge');
+  if (badge) {
+    badge.textContent = bus.route_code;
+    badge.style.backgroundColor = color;
+  }
+  setText('vehicleModalTitle', bus.vehplate);
+  setText('vehicleModalSubtitle', `Service ${bus.route_code} · Telemetry & 24-Hour Crowd Analytics`);
+
+  const status = fleetStatus(bus);
+  const active = status === 'active';
+  const stale = telemetryStale();
+  const level = busCrowd(bus);
+
+  const statusEl = $('vehicleModalLiveStatus');
+  if (statusEl) {
+    statusEl.className = `badge ${active && !stale ? 'badge-info' : 'badge-secondary'}`;
+    statusEl.textContent = status === 'stale' || stale ? 'Stale · Last known reading' : active ? 'Reported in latest pull' : 'Not in latest pull';
+  }
+
+  const crowdEl = $('vehicleModalCrowdStatus');
+  if (crowdEl) {
+    crowdEl.className = `badge ${level.badge}`;
+    crowdEl.textContent = `${level.label} occupancy (${percentLabel(bus.occupancy ? bus.occupancy * 100 : 0)})`;
+  }
+
+  setText('vehicleMetricRoute', `Service ${bus.route_code}`);
+  setText('vehicleMetricCrowd', `${level.label} (${percentLabel(bus.occupancy ? bus.occupancy * 100 : 0)})`);
+  setText('vehicleMetricRidership', `${numberLabel(bus.ridership)} / ${numberLabel(bus.capacity)} pax`);
+  setText('vehicleMetricSpeed', numeric(bus.speed) === null ? 'Unknown' : `${numberLabel(bus.speed)} km/h`);
+  setText('vehicleMetricGps', hasCoordinates(bus) ? `${bus.lat.toFixed(4)}, ${bus.lng.toFixed(4)}` : 'Location unknown');
+  setText('vehicleMetricLastSeen', `${escapeHtml(formatTime(lastSeen(bus), true))}${lastSeen(bus) ? ' SGT' : ''}`);
+
+  renderVehicleDetailMap(bus);
+  renderVehicleDetailChart(bus);
+  renderVehicleHourlyBarChart(bus);
+}
+
+function closeVehicleDashboard() {
+  const modal = $('vehicleDashboardModal');
+  if (modal) modal.hidden = true;
+  STATE.selectedVehiclePlate = null;
+}
+
+function renderVehicleDetailMap(bus) {
+  const container = $('vehicleDetailMap');
+  const banner = $('vehicleMapBanner');
+  if (!container || typeof L === 'undefined') {
+    if (banner) {
+      banner.hidden = false;
+      banner.textContent = 'Map library unavailable.';
+    }
+    return;
+  }
+
+  const hasGps = hasCoordinates(bus);
+  const routeCode = bus.route_code;
+  const routeCoords = NUS_ROUTE_PATHS[routeCode];
+  const color = routeColor(routeCode);
+
+  if (!STATE.vehicleDetailMap) {
+    STATE.vehicleDetailMap = L.map(container, {
+      zoomControl: true,
+      attributionControl: false
+    });
+    if (L.tileLayer) {
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, TomTom',
+        maxZoom: 19,
+        className: 'map-tiles-dark'
+      }).addTo(STATE.vehicleDetailMap);
+    }
+  }
+
+  STATE.vehicleDetailMap?.invalidateSize?.();
+
+  if (STATE.vehicleRouteTraceGroup) {
+    STATE.vehicleDetailMap.removeLayer(STATE.vehicleRouteTraceGroup);
+    STATE.vehicleRouteTraceGroup = null;
+  }
+  if (STATE.vehicleMarker) {
+    STATE.vehicleDetailMap.removeLayer(STATE.vehicleMarker);
+    STATE.vehicleMarker = null;
+  }
+
+  const layers = [];
+
+  if (routeCoords) {
+    const glow = L.polyline(routeCoords, {
+      color,
+      weight: 8,
+      opacity: 0.35,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false
+    });
+    const line = L.polyline(routeCoords, {
+      color,
+      weight: 3.5,
+      opacity: 0.95,
+      lineCap: 'round',
+      lineJoin: 'round'
+    });
+    line.bindTooltip?.(`<div class="route-trace-tooltip"><strong style="color:${color}">Service ${escapeHtml(routeCode)}</strong> · Standard Route Path</div>`, {
+      sticky: true,
+      className: 'leaflet-route-tooltip'
+    });
+    layers.push(glow, line);
+  }
+
+  const servicedStops = NUS_ROUTE_STOPS[routeCode];
+  for (const stop of NUS_BUS_STOPS) {
+    const isServiced = servicedStops && servicedStops.has(stop.name);
+    const stopIcon = L.divIcon({
+      className: 'bus-stop-pin-wrapper',
+      html: `<div class="bus-stop-pin ${isServiced ? 'active-route-stop' : 'dimmed-route-stop'}" style="--c:${color}" title="${escapeHtml(stop.name)}"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7]
+    });
+    const marker = L.marker([stop.lat, stop.lng], { icon: stopIcon });
+    marker.bindPopup?.(`<div class="map-popup-card"><strong>${escapeHtml(stop.name)}</strong><p class="map-popup-sub">${isServiced ? `Serviced by Service ${escapeHtml(routeCode)}` : 'Not on this service route'}</p></div>`);
+    layers.push(marker);
+  }
+
+  if (L.layerGroup) {
+    STATE.vehicleRouteTraceGroup = L.layerGroup(layers).addTo(STATE.vehicleDetailMap);
+  } else if (layers.length) {
+    STATE.vehicleRouteTraceGroup = layers[0].addTo(STATE.vehicleDetailMap);
+  }
+
+  if (hasGps) {
+    if (banner) banner.hidden = true;
+    const level = busCrowd(bus);
+    const stale = telemetryStale() || fleetStatus(bus) !== 'active';
+    const vehicleIcon = L.divIcon({
+      className: 'bus-custom-marker bus-marker-detail-pulsing',
+      html: `<div class="bus-marker-node ${stale ? 'is-stale' : ''}" style="--c:${color}"><div class="bus-marker-badge" style="background-color:${color};border-color:${level.color}">🚌 ${escapeHtml(bus.route_code)}</div><div class="bus-plate-subtext">${escapeHtml(bus.vehplate)}</div></div>`,
+      iconSize: [56, 38],
+      iconAnchor: [28, 19]
+    });
+    const popupHtml = `<div class="map-popup-card"><div class="map-popup-header"><span class="map-popup-route" style="background-color:${color}">${escapeHtml(bus.route_code)}</span><strong>${escapeHtml(bus.vehplate)}</strong></div>${busReadingsMarkup(bus)}</div>`;
+    STATE.vehicleMarker = L.marker([bus.lat, bus.lng], { icon: vehicleIcon })
+      .addTo(STATE.vehicleDetailMap);
+    STATE.vehicleMarker.bindPopup?.(popupHtml);
+
+    STATE.vehicleDetailMap.setView([bus.lat, bus.lng], 16);
+  } else {
+    if (banner) {
+      banner.hidden = false;
+      banner.textContent = `No live GPS coordinates reported for ${bus.vehplate}. Showing standard Service ${routeCode} corridor.`;
+    }
+    if (routeCoords && routeCoords.length) {
+      const mid = routeCoords[Math.floor(routeCoords.length / 2)];
+      STATE.vehicleDetailMap.setView(mid, 15);
+    } else {
+      STATE.vehicleDetailMap.setView([1.2966, 103.7764], 14);
+    }
+  }
+}
+
+function renderVehicleDetailChart(bus) {
+  const chart = chartContext('vehicleTimelineChart', 240);
+  if (!chart) return;
+  const { canvas, ctx, width, height } = chart;
+  const padding = { top: 24, right: 18, bottom: 42, left: 50 };
+  const chartW = width - padding.left - padding.right;
+  const chartH = height - padding.top - padding.bottom;
+  if (chartW <= 0 || chartH <= 0) return;
+
+  const rolling = STATE.timeMode === 'rolling';
+  const range = STATE.history24h.queryRange || {};
+  const start = rolling
+    ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - 143 * BUCKET_MS
+    : new Date(`${STATE.selectedDate}T00:00:00+08:00`).getTime();
+  const buckets = Array.from({ length: 144 }, (_, i) => ({
+    timestamp: start + i * BUCKET_MS,
+    label: formatTime(start + i * BUCKET_MS, true)
+  }));
+
+  const plate = bus.vehplate;
+  const routeCode = bus.route_code;
+  const color = routeColor(routeCode);
+  const metric = STATE.vehicleDetailMetric || 'crowd';
+
+  // Vehicle-specific historical readings
+  const vehicleRows = (STATE.history24h.vehicleData || []).filter(r => r.vehplate === plate);
+  const routeRows = (STATE.history24h.routeData || []).filter(r => r.route_code === routeCode);
+
+  const vehicleValues = Array(144).fill(null);
+  const vehicleOccupancies = Array(144).fill(null);
+  const routeValues = Array(144).fill(null);
+  const routeOccupancies = Array(144).fill(null);
+
+  for (const row of vehicleRows) {
+    const idx = Math.floor((row.bucket_ts - start) / BUCKET_MS);
+    if (idx >= 0 && idx < 144) {
+      vehicleValues[idx] = numeric(row.avg_ridership);
+      vehicleOccupancies[idx] = numeric(row.avg_occupancy_pct);
+    }
+  }
+
+  for (const row of routeRows) {
+    const idx = Math.floor((row.bucket_ts - start) / BUCKET_MS);
+    if (idx >= 0 && idx < 144) {
+      routeValues[idx] = numeric(row.avg_ridership);
+      routeOccupancies[idx] = numeric(row.avg_occupancy_pct);
+    }
+  }
+
+  // Include latest live observation into timeline if not yet in aggregated bucket
+  const busLastTime = lastSeen(bus);
+  if (busLastTime && busLastTime >= start && busLastTime < start + 144 * BUCKET_MS) {
+    const liveIdx = Math.floor((busLastTime - start) / BUCKET_MS);
+    if (liveIdx >= 0 && liveIdx < 144 && vehicleOccupancies[liveIdx] === null) {
+      if (numeric(bus.ridership) !== null) vehicleValues[liveIdx] = bus.ridership;
+      if (bus.occupancy !== null && bus.occupancy !== undefined) vehicleOccupancies[liveIdx] = Math.round(bus.occupancy * 100);
+    }
+  }
+
+  const primaryData = metric === 'crowd' ? vehicleOccupancies : vehicleValues;
+  const baselineData = metric === 'crowd' ? routeOccupancies : routeValues;
+  const observed = [...primaryData, ...baselineData].filter(v => v !== null);
+
+  const maxY = metric === 'crowd'
+    ? Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25)
+    : Math.max(10, Math.ceil(Math.max(0, ...observed) / 10) * 10);
+
+  const xAt = index => padding.left + (index / 143) * chartW;
+  const yAt = value => padding.top + chartH * (1 - value / maxY);
+
+  if (metric === 'crowd') {
+    for (const [from, to, zoneColor] of [
+      [0, 35, 'rgba(16,185,129,.07)'],
+      [35, 75, 'rgba(245,158,11,.07)'],
+      [75, maxY, 'rgba(239,68,68,.07)']
+    ]) {
+      ctx.fillStyle = zoneColor;
+      ctx.fillRect(padding.left, yAt(to), chartW, ((to - from) / maxY) * chartH);
+    }
+  }
+
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'right';
+  for (let tick = 0; tick <= 4; tick++) {
+    const val = (maxY * tick) / 4;
+    const y = yAt(val);
+    ctx.strokeStyle = '#273553';
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(width - padding.right, y);
+    ctx.stroke();
+    ctx.fillStyle = '#64748b';
+    const tickText = metric === 'crowd' ? `${numberLabel(val)}%` : `${Math.round(val)}`;
+    ctx.fillText(tickText, padding.left - 6, y + 3);
+  }
+
+  // Draw clean, readable in-chart legend at top
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'left';
+  // Vehicle solid line legend
+  ctx.fillStyle = color;
+  ctx.fillRect(padding.left, 10, 14, 3);
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fillText(`Bus ${plate}`, padding.left + 18, 14);
+
+  // Route dashed baseline legend
+  const legX = padding.left + 105;
+  ctx.strokeStyle = '#64748b';
+  ctx.setLineDash([4, 2]);
+  ctx.beginPath();
+  ctx.moveTo(legX, 11);
+  ctx.lineTo(legX + 16, 11);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#94a3b8';
+  ctx.fillText(`Route ${routeCode} Avg`, legX + 22, 14);
+
+  const step = chartW < 450 ? 48 : 24;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#64748b';
+  for (let i = 0; i < 144; i += step) {
+    ctx.fillText(formatTime(buckets[i].timestamp), xAt(i), height - 12);
+  }
+  ctx.textAlign = 'right';
+  ctx.fillText(`${formatTime(buckets[143].timestamp)} SGT`, xAt(143), height - 12);
+
+  // Route baseline (dashed reference line)
+  ctx.strokeStyle = '#475569';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  let prev = false;
+  baselineData.forEach((val, i) => {
+    if (val === null) { prev = false; return; }
+    if (prev) ctx.lineTo(xAt(i), yAt(val)); else ctx.moveTo(xAt(i), yAt(val));
+    prev = true;
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Vehicle-specific primary curve
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  prev = false;
+  primaryData.forEach((val, i) => {
+    if (val === null) { prev = false; return; }
+    if (prev) ctx.lineTo(xAt(i), yAt(val)); else ctx.moveTo(xAt(i), yAt(val));
+    prev = true;
+  });
+  ctx.stroke();
+
+  const validVehicleData = primaryData.filter(v => v !== null);
+  primaryData.forEach((val, i) => {
+    if (val === null) return;
+    const isHovered = STATE.vehicleHoveredIndex === i;
+    const radius = isHovered ? 5.5 : validVehicleData.length < 20 ? 3.5 : 2.5;
+    ctx.beginPath();
+    ctx.arc(xAt(i), yAt(val), radius, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  });
+
+  const hasVehicleData = primaryData.some(v => v !== null);
+  if (!hasVehicleData) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'center';
+    ctx.font = '13px sans-serif';
+    ctx.fillText(`No 24-hour readings recorded for ${plate} yet.`, padding.left + chartW / 2, padding.top + chartH / 2);
+  }
+
+  if (STATE.vehicleHoveredIndex !== null) {
+    ctx.strokeStyle = '#94a3b8';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xAt(STATE.vehicleHoveredIndex), padding.top);
+    ctx.lineTo(xAt(STATE.vehicleHoveredIndex), padding.top + chartH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const avgVal = validVehicleData.length ? validVehicleData.reduce((a, b) => a + b, 0) / validVehicleData.length : null;
+  const maxIdx = validVehicleData.length ? primaryData.indexOf(Math.max(...validVehicleData)) : -1;
+  const peakTime = maxIdx >= 0 ? buckets[maxIdx]?.label : null;
+  const peakVal = maxIdx >= 0 ? primaryData[maxIdx] : null;
+  const obsCount = validVehicleData.length;
+
+  setText('vehicleStatPeak', `Peak: ${peakTime ? `${peakTime} SGT (${metric === 'crowd' ? percentLabel(peakVal) : `${numberLabel(peakVal)} pax`})` : 'No data'}`);
+  setText('vehicleStatAvg', `24h Bus Avg: ${metric === 'crowd' ? percentLabel(avgVal) : `${numberLabel(avgVal)} pax`}`);
+  setText('vehicleStatActiveCount', `Observed: ${obsCount} interval${obsCount === 1 ? '' : 's'}`);
+
+  canvas._chartMeta = { padding, chartW, chartH, buckets, primaryData, baselineData, plate, routeCode, color, metric };
+}
+
+function renderVehicleHourlyBarChart(bus) {
+  const chart = chartContext('vehicleHourlyBarChart', 120);
+  if (!chart) return;
+  const { canvas, ctx, width, height } = chart;
+  const padding = { top: 14, right: 18, bottom: 26, left: 45 };
+  const chartW = width - padding.left - padding.right;
+  const chartH = height - padding.top - padding.bottom;
+  if (chartW <= 0 || chartH <= 0) return;
+
+  const plate = bus.vehplate;
+  const vehicleRows = (STATE.history24h.vehicleData || []).filter(r => r.vehplate === plate);
+
+  const hourlySums = Array(24).fill(0);
+  const hourlyWeights = Array(24).fill(0);
+  const hourlyCounts = Array(24).fill(0);
+
+  for (const row of vehicleRows) {
+    if (row.avg_occupancy_pct === null || row.avg_occupancy_pct === undefined) continue;
+    const hour = new Date(row.bucket_ts + 8 * 3600 * 1000).getUTCHours();
+    const weight = row.sample_count || 1;
+    hourlySums[hour] += row.avg_occupancy_pct * weight;
+    hourlyWeights[hour] += weight;
+    hourlyCounts[hour] += 1;
+  }
+
+  // Include latest live bus reading if not yet bucketed
+  const busLastTime = lastSeen(bus);
+  if (busLastTime && bus.occupancy !== null && bus.occupancy !== undefined) {
+    const liveHour = new Date(busLastTime + 8 * 3600 * 1000).getUTCHours();
+    if (hourlyCounts[liveHour] === 0) {
+      hourlySums[liveHour] += Math.round(bus.occupancy * 100);
+      hourlyWeights[liveHour] += 1;
+      hourlyCounts[liveHour] += 1;
+    }
+  }
+
+  const hourlyValues = Array(24).fill(null);
+  for (let h = 0; h < 24; h++) {
+    if (hourlyWeights[h] > 0) {
+      hourlyValues[h] = Math.round(hourlySums[h] / hourlyWeights[h]);
+    }
+  }
+
+  const observed = hourlyValues.filter(v => v !== null);
+  const maxY = Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25);
+
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const val = (maxY * i) / 4;
+    const y = padding.top + chartH * (1 - i / 4);
+    ctx.strokeStyle = '#273553';
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(width - padding.right, y);
+    ctx.stroke();
+    ctx.fillStyle = '#64748b';
+    ctx.fillText(`${numberLabel(val)}%`, padding.left - 6, y + 3);
+  }
+
+  const slotW = chartW / 24;
+  const barW = Math.max(5, slotW * 0.65);
+
+  for (let hour = 0; hour < 24; hour++) {
+    const x = padding.left + hour * slotW;
+    const barX = x + (slotW - barW) / 2;
+    const isHovered = STATE.vehicleHourlyHoveredIndex === hour;
+
+    if (isHovered) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.fillRect(x, padding.top, slotW, chartH);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = isHovered ? '#f1f5f9' : '#64748b';
+    const step = chartW < 500 ? 3 : chartW < 750 ? 2 : 1;
+    if (hour % step === 0) {
+      ctx.fillText(String(hour).padStart(2, '0'), barX + barW / 2, height - 8);
+    }
+
+    const val = hourlyValues[hour];
+    if (val === null) {
+      ctx.fillStyle = '#334155';
+      ctx.fillText('·', barX + barW / 2, padding.top + chartH - 4);
+      continue;
+    }
+
+    // For 0% occupancy (empty bus), draw a clean baseline pill
+    const barH = val === 0 ? 5 : Math.max(5, (val / maxY) * chartH);
+    const barY = padding.top + chartH - barH;
+    ctx.fillStyle = crowd(val).color;
+    ctx.fillRect(barX, barY, barW, barH);
+
+    if (isHovered) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(barX, barY, barW, barH);
+    }
+  }
+
+  if (!observed.length) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'center';
+    ctx.font = '13px sans-serif';
+    ctx.fillText(`No hourly occupancy readings recorded for ${plate} in this window.`, padding.left + chartW / 2, padding.top + chartH / 2);
+  }
+
+  // Update hourly summary stats
+  if (observed.length) {
+    const maxVal = Math.max(...observed);
+    const peakH = hourlyValues.indexOf(maxVal);
+    const avgVal = Math.round(observed.reduce((a, b) => a + b, 0) / observed.length);
+    setText('vehicleHourlyPeak', `Peak Hour: ${String(peakH).padStart(2, '0')}:00 SGT (${percentLabel(maxVal)})`);
+    setText('vehicleHourlyAvg', `Active Avg: ${percentLabel(avgVal)}`);
+    setText('vehicleHourlyActiveHours', `Operating: ${observed.length} of 24 hrs`);
+  } else {
+    setText('vehicleHourlyPeak', 'Peak Hour: No data');
+    setText('vehicleHourlyAvg', 'Active Avg: No data');
+    setText('vehicleHourlyActiveHours', 'Operating: 0 of 24 hrs');
+  }
+
+  canvas._hourlyMeta = { padding, chartW, chartH, slotW, barW, hourlyValues, hourlyCounts, maxY, plate, routeCode: bus.route_code };
+}
+
+function setupVehicleDashboardInteractivity() {
+  const canvas = $('vehicleTimelineChart');
+  const tooltip = $('vehicleChartTooltip');
+  if (canvas) {
+    canvas.addEventListener('mousemove', event => {
+      const meta = canvas._chartMeta;
+      if (!meta) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      if (x < meta.padding.left || x > meta.padding.left + meta.chartW) {
+        if (tooltip) tooltip.style.display = 'none';
+        STATE.vehicleHoveredIndex = null;
+        const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                    STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+        if (bus) renderVehicleDetailChart(bus);
+        return;
+      }
+      const index = Math.max(0, Math.min(143, Math.round(((x - meta.padding.left) / meta.chartW) * 143)));
+      STATE.vehicleHoveredIndex = index;
+      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+      if (bus) renderVehicleDetailChart(bus);
+
+      if (tooltip) {
+        const primary = meta.primaryData[index];
+        const baseline = meta.baselineData[index];
+        const timeLabel = meta.buckets[index]?.label || '';
+        const unit = meta.metric === 'crowd' ? '%' : ' pax';
+        tooltip.style.display = 'block';
+        tooltip.style.left = `${Math.min(x + 12, meta.chartW - 40)}px`;
+        tooltip.style.top = '20px';
+        tooltip.innerHTML = `<strong>${escapeHtml(timeLabel)} SGT</strong>` +
+          (primary !== null ? `<div class="tooltip-row"><span style="color:${meta.color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(primary)}${unit}</span></div>` : `<div>No reading for ${escapeHtml(meta.plate)}</div>`) +
+          (baseline !== null ? `<div class="tooltip-row"><span style="color:#94a3b8">Route ${escapeHtml(meta.routeCode)} Avg</span><span>${numberLabel(baseline)}${unit}</span></div>` : '');
+      }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      if (tooltip) tooltip.style.display = 'none';
+      STATE.vehicleHoveredIndex = null;
+      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+      if (bus) renderVehicleDetailChart(bus);
+    });
+  }
+
+  const hourlyCanvas = $('vehicleHourlyBarChart');
+  const hourlyTooltip = $('vehicleHourlyTooltip');
+  if (hourlyCanvas) {
+    hourlyCanvas.addEventListener('mousemove', event => {
+      const meta = hourlyCanvas._hourlyMeta;
+      if (!meta) return;
+      const rect = hourlyCanvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      if (x < meta.padding.left || x > meta.padding.left + meta.chartW) {
+        if (hourlyTooltip) hourlyTooltip.style.display = 'none';
+        STATE.vehicleHourlyHoveredIndex = null;
+        const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                    STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+        if (bus) renderVehicleHourlyBarChart(bus);
+        return;
+      }
+      const hour = Math.max(0, Math.min(23, Math.floor((x - meta.padding.left) / meta.slotW)));
+      STATE.vehicleHourlyHoveredIndex = hour;
+      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+      if (bus) renderVehicleHourlyBarChart(bus);
+
+      if (hourlyTooltip) {
+        const val = meta.hourlyValues[hour];
+        const count = meta.hourlyCounts[hour];
+        const timeLabel = `${String(hour).padStart(2, '0')}:00 - ${String(hour).padStart(2, '0')}:59 SGT`;
+        hourlyTooltip.style.display = 'block';
+        hourlyTooltip.style.left = `${Math.min(x + 12, meta.chartW - 60)}px`;
+        hourlyTooltip.style.top = '15px';
+        hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
+          (val !== null ? `<div class="tooltip-row"><span style="color:${crowd(val).color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(val)}% (${count} reading${count === 1 ? '' : 's'})</span></div>` : `<div>No readings for ${escapeHtml(meta.plate)}</div>`);
+      }
+    });
+
+    hourlyCanvas.addEventListener('mouseleave', () => {
+      if (hourlyTooltip) hourlyTooltip.style.display = 'none';
+      STATE.vehicleHourlyHoveredIndex = null;
+      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+      if (bus) renderVehicleHourlyBarChart(bus);
+    });
+  }
+
+  $('btnVehicleMetricCrowd')?.addEventListener('click', () => {
+    STATE.vehicleDetailMetric = 'crowd';
+    $('btnVehicleMetricCrowd')?.classList.add('active');
+    $('btnVehicleMetricCrowd')?.setAttribute('aria-pressed', 'true');
+    $('btnVehicleMetricPax')?.classList.remove('active');
+    $('btnVehicleMetricPax')?.setAttribute('aria-pressed', 'false');
+    const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+    if (bus) renderVehicleDetailChart(bus);
+  });
+
+  $('btnVehicleMetricPax')?.addEventListener('click', () => {
+    STATE.vehicleDetailMetric = 'exact';
+    $('btnVehicleMetricPax')?.classList.add('active');
+    $('btnVehicleMetricPax')?.setAttribute('aria-pressed', 'true');
+    $('btnVehicleMetricCrowd')?.classList.remove('active');
+    $('btnVehicleMetricCrowd')?.setAttribute('aria-pressed', 'false');
+    const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+    if (bus) renderVehicleDetailChart(bus);
+  });
+
+  $('btnVehicleModalClose')?.addEventListener('click', closeVehicleDashboard);
+  $('vehicleDashboardModal')?.addEventListener('click', event => {
+    if (event.target === $('vehicleDashboardModal')) closeVehicleDashboard();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && STATE.selectedVehiclePlate) {
+      closeVehicleDashboard();
+    }
+  });
+
+  $('btnVehicleJumpToMap')?.addEventListener('click', () => {
+    const plate = STATE.selectedVehiclePlate;
+    const bus = STATE.allFleet.find(b => b.vehplate === plate) || STATE.liveBuses.find(b => b.vehplate === plate);
+    closeVehicleDashboard();
+    if (bus) {
+      STATE.mapRouteFilter = bus.route_code;
+      STATE.mapBusFilter = bus.vehplate;
+    }
+    $('tabButtonMap')?.click();
+  });
+
+  $('btnVehicleJumpToAnalytics')?.addEventListener('click', () => {
+    const plate = STATE.selectedVehiclePlate;
+    const bus = STATE.allFleet.find(b => b.vehplate === plate) || STATE.liveBuses.find(b => b.vehplate === plate);
+    closeVehicleDashboard();
+    if (bus) {
+      STATE.activeRoutes = new Set([bus.route_code]);
+    }
+    $('tabButtonHistory')?.click();
+  });
+
+  // Delegated clicks for bus cards in fleetGrid
+  $('fleetGrid')?.addEventListener('click', event => {
+    const card = event.target?.closest?.('.bus-card');
+    if (card && card.dataset?.plate) {
+      openVehicleDashboard(card.dataset.plate);
+    }
+  });
+  $('fleetGrid')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      const card = event.target?.closest?.('.bus-card');
+      if (card && card.dataset?.plate) {
+        event.preventDefault();
+        openVehicleDashboard(card.dataset.plate);
+      }
+    }
+  });
+
+  // Delegated click for map popup buttons
+  document.addEventListener('click', event => {
+    const btn = event.target?.closest?.('.btn-open-bus-dashboard');
+    if (btn && btn.dataset?.plate) {
+      openVehicleDashboard(btn.dataset.plate);
+    }
+  });
+}
+
 function setupTabs() {
   const tabs = [...document.querySelectorAll('.tab-btn')];
   tabs.forEach(button => button.addEventListener('click', () => {
@@ -618,25 +1510,20 @@ function setupActionButtons() {
   $('btnPollNow').addEventListener('click', pollNow); $('btnSettingsPollNow').addEventListener('click', pollNow);
   $('btnRefreshData').addEventListener('click', refreshAllData);
   $('inputAdminToken').addEventListener('input', event => { STATE.adminToken = event.target.value.trim(); });
-  const saveToken = async token => {
-    if (STATE.saving) return;
-    STATE.saving = true; renderStatus();
-    try {
-      await requestJson('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fms_token: token }) });
-      $('inputToken').value = '';
-      showAction(token ? 'Manual token override saved. Collect a snapshot to check the direct ConnectX connection.' : 'Manual override removed. Automatic guest access is restored.');
-    } catch (error) { showAction(`Settings could not be saved: ${error.message}`, true); }
-    finally { STATE.saving = false; if (STATE.refreshPromise) await STATE.refreshPromise; await refreshAllData(); }
-  };
-  $('settingsForm').addEventListener('submit', event => {
-    event.preventDefault(); const token = $('inputToken').value.trim();
-    if (!token) { showAction('Enter a token to save a manual override. Your current access settings have not changed.'); return; }
-    saveToken(token);
-  });
-  $('btnRemoveToken').addEventListener('click', () => saveToken(''));
   let resizeFrame;
   window.addEventListener('resize', () => {
-    cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => { renderTimelineChart(); renderHourlyBarChart(); STATE.leafletMap?.invalidateSize(); });
+    cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => {
+      renderTimelineChart(); renderHourlyBarChart(); STATE.leafletMap?.invalidateSize();
+      if (STATE.selectedVehiclePlate && $('vehicleDashboardModal') && !$('vehicleDashboardModal').hidden) {
+        const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                    STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+        if (bus) {
+          renderVehicleDetailChart(bus);
+          renderVehicleHourlyBarChart(bus);
+          STATE.vehicleDetailMap?.invalidateSize();
+        }
+      }
+    });
   });
 }
 
@@ -657,7 +1544,7 @@ async function pollUnivusApi() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  setupTabs(); setupFilters(); setupActionButtons(); setupChartInteractivity();
+  setupTabs(); setupFilters(); setupActionButtons(); setupChartInteractivity(); setupVehicleDashboardInteractivity();
   await refreshAllData();
   if (telemetryStale()) {
     void pollUnivusApi();

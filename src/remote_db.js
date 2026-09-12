@@ -92,7 +92,7 @@ export class RemoteBusDatabase {
       'CREATE INDEX IF NOT EXISTS idx_snapshots_route_time ON snapshots(route_code, timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_snapshots_vehicle_time ON snapshots(vehplate, timestamp DESC, id DESC)',
       'CREATE INDEX IF NOT EXISTS idx_poll_batches_time ON poll_batches(timestamp DESC, id DESC)',
-      ...Object.entries({ last_polled_at: '0', fms_token: '' }).map(([key, value]) => ({
+      ...Object.entries({ last_polled_at: '0' }).map(([key, value]) => ({
         sql: 'INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING', args: [key, value]
       })),
       {
@@ -214,13 +214,19 @@ export class RemoteBusDatabase {
       strftime('%Y-%m-%dT%H:%M:%fZ', CAST(timestamp / ${BUCKET_MS} AS INTEGER) * ${BUCKET_MS} / 1000, 'unixepoch') AS time_iso
     `;
     await this.ready();
-    const [routeData, campusData] = await this.client.batch([
+    const [routeData, campusData, vehicleData] = await this.client.batch([
       { sql: `SELECT ${select}, route_code FROM snapshots
         WHERE timestamp >= ? AND timestamp <= ? GROUP BY bucket_ts, route_code ORDER BY bucket_ts, route_code`, args: [range.start, range.end] },
       { sql: `SELECT ${select} FROM snapshots
-        WHERE timestamp >= ? AND timestamp <= ? GROUP BY bucket_ts ORDER BY bucket_ts`, args: [range.start, range.end] }
+        WHERE timestamp >= ? AND timestamp <= ? GROUP BY bucket_ts ORDER BY bucket_ts`, args: [range.start, range.end] },
+      { sql: `SELECT ${select}, vehplate, route_code FROM snapshots
+        WHERE timestamp >= ? AND timestamp <= ? GROUP BY bucket_ts, vehplate ORDER BY bucket_ts, vehplate`, args: [range.start, range.end] }
     ], 'read');
-    return { routeData: routeData.rows.map(row => ({ ...row })), campusData: campusData.rows.map(row => ({ ...row })) };
+    return {
+      routeData: routeData.rows.map(row => ({ ...row })),
+      campusData: campusData.rows.map(row => ({ ...row })),
+      vehicleData: vehicleData.rows.map(row => ({ ...row }))
+    };
   }
 
   async getAvailableDates() {

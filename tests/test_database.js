@@ -126,7 +126,7 @@ test('default analytics cover seven days and all read paths exclude future times
 
 test('clear is complete, settings survive, and reads start empty', async t => {
   const db = createTestDatabase(t);
-  await db.setSetting('fms_token', 'test-only-token');
+  await db.setSetting('app_setting', 'test-only-value');
   await db.setSetting('temporary', 'value');
   assert.equal(await db.deleteSetting('temporary'), 1);
   assert.equal(await db.getSetting('temporary'), null);
@@ -138,7 +138,7 @@ test('clear is complete, settings survive, and reads start empty', async t => {
   assert.deepEqual(await db.getAllFleetStatus(), []);
   assert.deepEqual(await db.getAvailableDates(), []);
   assert.equal(await db.getSetting('last_polled_at'), '0');
-  assert.equal(await db.getSetting('fms_token'), 'test-only-token');
+  assert.equal(await db.getSetting('app_setting'), 'test-only-value');
   await assert.rejects(() => db.getExportRows(-1), RangeError);
 });
 

@@ -145,8 +145,7 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
         return sendJson(res, 200, { ...status, routes: NUS_ROUTES,
           knownFleetCount: fleet.length, availableDates,
           timeZone: 'Asia/Singapore', storage: db.storage.type,
-          adminRequired: Boolean(env.ADMIN_TOKEN) || !localRequest(req, env),
-          settingsEditable: !env.FMS_TOKEN?.trim() });
+          adminRequired: Boolean(env.ADMIN_TOKEN) || !localRequest(req, env) });
       }
       if (pathname === '/api/live') {
         const [buses, allFleet, status, latestPoll] = await Promise.all([
@@ -184,17 +183,10 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
         return sendJson(res, result.success ? 200 : result.statusCode || 502, result);
       }
       if (pathname === '/api/settings') {
-        const body = await parseBody(req);
-        if (Object.keys(body).some(key => key !== 'fms_token') || typeof body.fms_token !== 'string' || body.fms_token.length > 4096 || /[\r\n\0]/.test(body.fms_token)) {
-          throw new RequestError(400, 'Provide only fms_token as a string of at most 4096 characters.');
-        }
-        if (env.FMS_TOKEN?.trim()) throw new RequestError(409, 'FMS_TOKEN is configured by the deployment environment.');
+        await parseBody(req);
         if (collector.isPolling) throw new RequestError(409, 'Wait for the current poll to finish before changing credentials.');
-        await db.setSetting('fms_token', body.fms_token.trim());
-        await db.deleteSetting('last_error');
-        await db.deleteSetting('last_attempt_at');
         const status = await collector.getStatus();
-        return sendJson(res, 200, { success: true, authMode: status.authMode, dataProvider: status.dataProvider, hasToken: status.hasToken });
+        return sendJson(res, 200, { success: true, authMode: status.authMode, dataProvider: status.dataProvider, hasToken: status.hasToken, message: 'Settings are managed automatically.' });
       }
       if (pathname === '/api/clear-all') {
         if (collector.isPolling) throw new RequestError(409, 'Wait for the current poll to finish before clearing history.');

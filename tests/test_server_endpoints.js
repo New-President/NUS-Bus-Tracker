@@ -151,13 +151,12 @@ test('on-demand collection reports guest authentication and upstream failures ac
   assert.equal(unavailable.status, 502);
   assert.equal(unavailable.json.success, false);
   assert.equal(calls(), 0);
-  await db.setSetting('fms_token', 'provider-token');
-  collector.fetchBuses = async () => { throw new Error('Provider unavailable'); };
+  collector.fetchPublic = async () => { throw new Error('Provider unavailable'); };
   const failure = await request('/api/poll-now', { method: 'POST' });
   assert.equal(failure.status, 502);
   assert.equal(failure.json.success, false);
   assert.equal(await db.getTotalSnapshotsCount(), 0);
-  collector.fetchBuses = async () => [];
+  univusClient.fetchBuses = async () => [];
   const empty = await request('/api/poll-now', { method: 'POST' });
   assert.equal(empty.status, 200);
   assert.equal(empty.json.success, true);
@@ -165,7 +164,7 @@ test('on-demand collection reports guest authentication and upstream failures ac
 });
 
 test('on-demand collection works with automatic guest authentication and no saved token', async t => {
-  const { request, db, calls, guestCalls } = await fixture(t);
+  const { request, calls, guestCalls } = await fixture(t);
   const status = await request('/api/status');
   assert.equal(status.json.authMode, 'guest');
   assert.equal(status.json.dataProvider, 'univus');
@@ -179,7 +178,6 @@ test('on-demand collection works with automatic guest authentication and no save
   assert.equal(result.json.dataProvider, 'univus');
   assert.equal(calls(), 1);
   assert.equal(guestCalls(), 1);
-  assert.equal(await db.getSetting('fms_token'), '');
 });
 
 test('automatic uNivUS collection exposes measured GPS and renewal metadata with API and CSV provenance but no credentials', async t => {
@@ -223,7 +221,7 @@ test('automatic uNivUS collection exposes measured GPS and renewal metadata with
 });
 
 test('API method guards and preflight requests cannot trigger collection', async t => {
-  const { request, calls } = await fixture(t, { FMS_TOKEN: 'provider-token' });
+  const { request, calls } = await fixture(t);
   for (const [pathname, method, allowed] of [
     ['/api/poll-now', 'GET', 'POST'], ['/api/settings', 'GET', 'POST'],
     ['/api/clear-all', 'GET', 'POST'], ['/api/cron', 'POST', 'GET']
@@ -237,67 +235,30 @@ test('API method guards and preflight requests cannot trigger collection', async
   assert.equal(calls(), 0);
 });
 
-test('settings accept only validated credentials and never echo stored secrets', async t => {
-  const { request, db } = await fixture(t);
+test('settings report automatic configuration, reject invalid payloads, and reject mutations during collection', async t => {
+  const { request, collector } = await fixture(t);
   for (const rawBody of ['{broken', 'null', '[]', '"token"']) {
     const res = await request('/api/settings', { method: 'POST', rawBody });
     assert.equal(res.status, 400, rawBody);
   }
-  for (const body of [{ fms_token: 123 }, { fms_token: 'x'.repeat(4097) }, { unrecognized: true }, { mode: 'live' }]) {
-    const res = await request('/api/settings', { method: 'POST', body });
-    assert.equal(res.status, 400);
-  }
-  const token = 'only-store-this-secret';
-  const saved = await request('/api/settings', { method: 'POST', body: { fms_token: token } });
-  assert.equal(saved.status, 200);
-  assert.equal(saved.json.success, true);
-  assert.equal(await db.getSetting('fms_token'), token);
-  assert.equal(saved.data.includes(token), false);
-  assert.equal((await request('/api/status')).data.includes(token), false);
-});
-
-test('environment credentials cannot be overwritten through dashboard settings', async t => {
-  const { request, db } = await fixture(t, { FMS_TOKEN: 'deployment-token' });
-  const res = await request('/api/settings', { method: 'POST', body: { fms_token: 'replacement' } });
-  assert.equal(res.status, 409);
-  assert.notEqual(await db.getSetting('fms_token'), 'replacement');
-  assert.equal(res.data.includes('deployment-token'), false);
-});
-
-test('replacing a previously working token marks the new connection pending and preserves history', async t => {
-  const { request, db, collector } = await fixture(t);
-  await db.setSetting('fms_token', 'old-provider-token');
-  collector.fetchBuses = async () => [normalizeBus({ vehplate: 'TEST-BEFORE-REPLACEMENT' }, 'A1', Date.now())];
-  const collected = await request('/api/poll-now', { method: 'POST' });
-  assert.equal(collected.status, 200);
-  const before = await request('/api/status');
-  assert.equal(before.json.connectionState, 'healthy');
-  const saved = await request('/api/settings', { method: 'POST', body: { fms_token: 'new-provider-token' } });
-  assert.equal(saved.status, 200);
-  const after = await request('/api/status');
-  assert.equal(after.json.connectionState, 'pending');
-  assert.equal(after.json.lastPolledAt, before.json.lastPolledAt);
-  assert.equal(await db.getTotalSnapshotsCount(), 1);
-  assert.equal(await db.getSetting('fms_token'), 'new-provider-token');
-});
-
-test('settings reject oversized bodies and changes during collection', async t => {
-  const { request, collector, db } = await fixture(t);
   const oversized = await request('/api/settings', {
-    method: 'POST', body: { fms_token: 'x'.repeat(20 * 1024) }
+    method: 'POST', body: { data: 'x'.repeat(20 * 1024) }
   });
   assert.equal(oversized.status, 413);
-  await db.setSetting('fms_token', 'current-token');
+  const res = await request('/api/settings', { method: 'POST', body: {} });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.success, true);
+  assert.equal(res.json.dataProvider, 'univus');
+  assert.equal(res.json.authMode, 'guest');
   let release;
   let markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });
-  collector.fetchBuses = async () => new Promise(resolve => { release = resolve; markStarted(); });
+  collector.univusClient.fetchBuses = async () => new Promise(resolve => { release = resolve; markStarted(); });
   const pending = collector.pollNow();
   await started;
   try {
-    const res = await request('/api/settings', { method: 'POST', body: { fms_token: 'replacement' } });
-    assert.equal(res.status, 409);
-    assert.equal(await db.getSetting('fms_token'), 'current-token');
+    const duringPoll = await request('/api/settings', { method: 'POST', body: {} });
+    assert.equal(duringPoll.status, 409);
   } finally {
     release([]);
     await pending;
@@ -313,29 +274,28 @@ test('local administrative actions reject hostile origins and Host headers', asy
     { 'Sec-Fetch-Site': 'cross-site' }
   ]) {
     const res = await request('/api/settings', {
-      method: 'POST', body: { fms_token: 'untrusted' }, headers
+      method: 'POST', body: {}, headers
     });
     assert.ok([401, 403].includes(res.status), JSON.stringify(headers));
   }
 });
 
 test('deployed administrative endpoints require the configured bearer token', async t => {
-  const { request, db } = await fixture(t, { VERCEL: '1', ADMIN_TOKEN: 'test-admin-token' });
+  const { request } = await fixture(t, { VERCEL: '1', ADMIN_TOKEN: 'test-admin-token' });
   for (const pathname of ['/api/settings', '/api/poll-now', '/api/clear-all']) {
-    const denied = await request(pathname, { method: 'POST', body: { fms_token: 'provider-token' } });
+    const denied = await request(pathname, { method: 'POST', body: {} });
     assert.ok([401, 403].includes(denied.status), pathname);
   }
   const allowed = await request('/api/settings', {
-    method: 'POST', body: { fms_token: 'provider-token' },
+    method: 'POST', body: {},
     headers: { Authorization: 'Bearer test-admin-token' }
   });
   assert.equal(allowed.status, 200);
-  assert.equal(await db.getSetting('fms_token'), 'provider-token');
 });
 
 test('hosted deployment without administrative credentials cannot mutate data', async t => {
   const { request } = await fixture(t, { VERCEL: '1' });
-  const res = await request('/api/settings', { method: 'POST', body: { fms_token: 'no-access' } });
+  const res = await request('/api/settings', { method: 'POST', body: {} });
   assert.ok([401, 403, 503].includes(res.status));
 });
 
