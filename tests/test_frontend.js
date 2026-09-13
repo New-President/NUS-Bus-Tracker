@@ -167,7 +167,8 @@ function dashboard() {
     formatLocalDate, formatTime, setupActionButtons, setupFilters, setupTabs,
     setupChartInteractivity, fetchHistory24h,
     openVehicleDashboard, closeVehicleDashboard, renderVehicleDetailMap,
-    renderVehicleDetailChart, setupVehicleDashboardInteractivity
+    renderVehicleDetailChart, setupVehicleDashboardInteractivity,
+    smoothSeries
   };`, sandbox, { filename: 'public/app.js' });
   return {
     ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
@@ -226,6 +227,98 @@ test('timeline draws measured zero and breaks the line at missing intervals', ()
   assert.equal(dataPaths.length, 1);
   assert.deepEqual(dataPaths[0].points.map(point => point.operation), ['move', 'line', 'move']);
   assert.ok(drawing.dots.every(dot => Number.isFinite(dot.x) && Number.isFinite(dot.y)));
+});
+
+test('smoothSeries reduces variance and bridges isolated single gaps while keeping multi-interval downtime null', () => {
+  const ui = dashboard();
+  const noisy = [10, 60, 10, 50, 10];
+  const smoothed = ui.smoothSeries(noisy);
+  assert.equal(smoothed[1], 35.0, 'Peak 60 dampened to weighted average 35.0');
+  assert.equal(smoothed[2], 32.5, 'Trough 10 smoothed to 32.5');
+
+  // Single gap bridging
+  const singleGap = [20, null, 40];
+  const bridged = ui.smoothSeries(singleGap);
+  assert.ok(bridged[1] !== null, 'Isolated single gap is bridged');
+  assert.equal(bridged[1], 30.0);
+
+  // Multi-interval downtime (e.g. overnight) is preserved as null
+  const overnight = [25, null, null, null, 30];
+  const overnightSmoothed = ui.smoothSeries(overnight);
+  assert.equal(overnightSmoothed[1], null);
+  assert.equal(overnightSmoothed[2], null);
+  assert.equal(overnightSmoothed[3], null);
+});
+
+test('smoothing toggle button switches between smoothed and raw view modes', async () => {
+  const ui = dashboard();
+  ui.setupFilters();
+  const end = Math.floor(NOW / INTERVAL) * INTERVAL;
+  ui.STATE.history24h = { queryRange: { end: NOW }, routeData: [], campusData: [
+    { bucket_ts: end - 2 * INTERVAL, avg_ridership: 10, avg_occupancy_pct: null },
+    { bucket_ts: end - 1 * INTERVAL, avg_ridership: null, avg_occupancy_pct: null },
+    { bucket_ts: end, avg_ridership: 30, avg_occupancy_pct: null }
+  ] };
+
+  // Default is smoothed
+  assert.equal(ui.STATE.smoothing, 'smoothed');
+  ui.renderTimelineChart();
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /30-minute rolling average/);
+
+  // Switch to raw
+  await ui.element('smoothingToggleGroup').dispatch('click', {
+    target: {
+      dataset: { smoothing: 'raw' },
+      closest: selector => selector === 'button' ? { dataset: { smoothing: 'raw' } } : null
+    }
+  });
+  assert.equal(ui.STATE.smoothing, 'raw');
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /10-minute intervals/);
+
+  // Switch back to smoothed
+  await ui.element('smoothingToggleGroup').dispatch('click', {
+    target: {
+      dataset: { smoothing: 'smoothed' },
+      closest: selector => selector === 'button' ? { dataset: { smoothing: 'smoothed' } } : null
+    }
+  });
+  assert.equal(ui.STATE.smoothing, 'smoothed');
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /30-minute rolling average/);
+});
+
+test('timeline chart scales responsively and avoids X-axis label collision on mobile', async () => {
+  const ui = dashboard();
+  const canvas = ui.element('timelineChart');
+  canvas.parentElement.clientWidth = 340; // Mobile viewport
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 312, height: 240 });
+  ui.renderTimelineChart();
+
+  // Canvas height scales down to 240 on mobile instead of fixed 420
+  assert.equal(canvas.style.height, '240px');
+
+  // Verify X-axis labels drawn
+  const drawing = ui.drawing('timelineChart');
+  const timeLabels = drawing.text.filter(t => /\b\d{2}:\d{2}\b/.test(t.text));
+  assert.ok(timeLabels.length >= 3, 'Multiple time labels rendered on mobile');
+
+  // Verify distance between adjacent labels is >= 50px to guarantee no collision
+  timeLabels.sort((a, b) => a.x - b.x);
+  for (let i = 1; i < timeLabels.length; i++) {
+    const gap = timeLabels[i].x - timeLabels[i - 1].x;
+    assert.ok(gap >= 50, `Adjacent labels "${timeLabels[i-1].text}" and "${timeLabels[i].text}" have gap ${gap}px >= 50px`);
+  }
+
+  // Test touch interaction
+  ui.setupChartInteractivity();
+  await canvas.dispatch('touchstart', {
+    touches: [{ clientX: 100, clientY: 100 }]
+  });
+  assert.ok(ui.STATE.hoveredIndex !== null, 'Touchstart sets hoveredIndex');
+  assert.equal(ui.element('chartTooltip').style.display, 'block', 'Touchstart reveals tooltip');
+
+  await canvas.dispatch('touchend');
+  assert.equal(ui.STATE.hoveredIndex, null, 'Touchend resets hoveredIndex');
+  assert.equal(ui.element('chartTooltip').style.display, 'none', 'Touchend hides tooltip');
 });
 
 test('hourly occupancy chart distinguishes unmeasured hours from measured zero', () => {

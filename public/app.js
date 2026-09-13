@@ -15,6 +15,34 @@ const average = values => {
   const known = values.filter(value => numeric(value) !== null);
   return known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : null;
 };
+function smoothSeries(values, { bridgeSingleGaps = true } = {}) {
+  const n = values.length;
+  const bridged = [...values];
+  if (bridgeSingleGaps) {
+    for (let i = 1; i < n - 1; i++) {
+      if (bridged[i] === null && bridged[i - 1] !== null && bridged[i + 1] !== null) {
+        bridged[i] = Number(((bridged[i - 1] + bridged[i + 1]) / 2).toFixed(1));
+      }
+    }
+  }
+  const smoothed = Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const curr = bridged[i];
+    if (curr === null) continue;
+    const prev = i > 0 ? bridged[i - 1] : null;
+    const next = i < n - 1 ? bridged[i + 1] : null;
+    if (prev !== null && next !== null) {
+      smoothed[i] = Number((0.25 * prev + 0.5 * curr + 0.25 * next).toFixed(1));
+    } else if (prev !== null) {
+      smoothed[i] = Number(((curr * 2 + prev) / 3).toFixed(1));
+    } else if (next !== null) {
+      smoothed[i] = Number(((curr * 2 + next) / 3).toFixed(1));
+    } else {
+      smoothed[i] = curr;
+    }
+  }
+  return smoothed;
+}
 function formatLocalDate(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
   const part = type => parts.find(item => item.type === type).value;
@@ -31,7 +59,7 @@ function formatTime(value, includeDate = false) {
 }
 const hourRange = hour => `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`;
 const STATE = {
-  currentTab: 'tab-24h', currentView: 'exact', timeMode: 'rolling', selectedDate: formatLocalDate(),
+  currentTab: 'tab-24h', currentView: 'exact', smoothing: 'smoothed', timeMode: 'rolling', selectedDate: formatLocalDate(),
   availableDates: [], activeRoutes: new Set(['CAMPUS_AVG']), seenRoutes: new Set(), routesMeta: {},
   fleetFilter: 'all', fleetStatusFilter: 'all', fleetSearch: '', liveBuses: [], allFleet: [], live: {},
   history24h: { routeData: [], campusData: [] }, analytics: {}, status: {}, errors: {},
@@ -282,29 +310,51 @@ function chartContext(id, height) {
 }
 
 function renderTimelineChart() {
-  const chart = chartContext('timelineChart', 420);
+  const containerW = $('timelineChart')?.parentElement?.clientWidth || 1100;
+  const isMobile = containerW < 520;
+  const height = isMobile ? 240 : (containerW < 768 ? 310 : 420);
+  const chart = chartContext('timelineChart', height);
   if (!chart) return;
-  const { canvas, ctx, width, height } = chart;
-  const padding = { top: 30, right: 24, bottom: 52, left: 60 };
+  const { canvas, ctx, width } = chart;
+  const padding = isMobile
+    ? { top: 22, right: 14, bottom: 36, left: 40 }
+    : { top: 30, right: 24, bottom: 52, left: 60 };
   const chartW = width - padding.left - padding.right, chartH = height - padding.top - padding.bottom;
   const rolling = STATE.timeMode === 'rolling';
+  const isSmoothed = STATE.smoothing === 'smoothed';
   const range = STATE.history24h.queryRange || {};
   const start = rolling ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - 143 * BUCKET_MS : new Date(`${STATE.selectedDate}T00:00:00+08:00`).getTime();
   const buckets = Array.from({ length: 144 }, (_, i) => ({ timestamp: start + i * BUCKET_MS, label: formatTime(start + i * BUCKET_MS, true) }));
   const seriesMap = new Map();
   for (const code of ['CAMPUS_AVG', ...routeCodes()]) {
-    if (STATE.activeRoutes.has(code)) seriesMap.set(code, { code, color: routeColor(code), values: Array(144).fill(null), occupancies: Array(144).fill(null) });
+    if (STATE.activeRoutes.has(code)) {
+      seriesMap.set(code, {
+        code, color: routeColor(code),
+        rawValues: Array(144).fill(null), rawOccupancies: Array(144).fill(null),
+        values: Array(144).fill(null), occupancies: Array(144).fill(null)
+      });
+    }
   }
   const populate = (row, code) => {
     const series = seriesMap.get(code);
     const index = Math.floor((row.bucket_ts - start) / BUCKET_MS);
     if (!series || index < 0 || index >= 144) return;
+    series.rawValues[index] = numeric(row.avg_ridership);
+    series.rawOccupancies[index] = numeric(row.avg_occupancy_pct);
     series.values[index] = numeric(row.avg_ridership);
     series.occupancies[index] = numeric(row.avg_occupancy_pct);
   };
   (STATE.history24h.routeData || []).forEach(row => populate(row, row.route_code));
   (STATE.history24h.campusData || []).forEach(row => populate(row, 'CAMPUS_AVG'));
+  if (isSmoothed) {
+    for (const series of seriesMap.values()) {
+      series.values = smoothSeries(series.rawValues);
+      series.occupancies = smoothSeries(series.rawOccupancies);
+    }
+  }
   const valuesFor = series => STATE.currentView === 'exact' ? series.values : series.occupancies;
+  const rawValuesFor = series => STATE.currentView === 'exact' ? series.rawValues : series.rawOccupancies;
+  const rawObserved = [...seriesMap.values()].flatMap(rawValuesFor).filter(value => value !== null);
   const observed = [...seriesMap.values()].flatMap(valuesFor).filter(value => value !== null);
   const maxY = STATE.currentView === 'exact' ? Math.max(10, Math.ceil(Math.max(0, ...observed) / 10) * 10) : Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25);
   const xAt = index => padding.left + index / 143 * chartW;
@@ -314,20 +364,28 @@ function renderTimelineChart() {
       ctx.fillStyle = color; ctx.fillRect(padding.left, yAt(to), chartW, (to - from) / maxY * chartH);
     }
   }
-  ctx.font = '11px sans-serif'; ctx.textAlign = 'right';
+  ctx.font = isMobile ? '10px sans-serif' : '11px sans-serif'; ctx.textAlign = 'right';
   for (let tick = 0; tick <= 4; tick++) {
     const value = maxY * tick / 4, y = yAt(value);
     ctx.strokeStyle = '#273553'; ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(width - padding.right, y); ctx.stroke();
-    ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}${STATE.currentView === 'exact' ? '' : '%'}`, padding.left - 8, y + 4);
+    ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}${STATE.currentView === 'exact' ? '' : '%'}`, padding.left - (isMobile ? 6 : 8), y + (isMobile ? 3 : 4));
   }
-  ctx.textAlign = 'left'; ctx.fillText(STATE.currentView === 'exact' ? 'Average passengers per bus' : 'Crowd level (%)', padding.left, 16);
-  const labelStep = chartW < 600 ? 36 : 24;
+  ctx.textAlign = 'left'; ctx.fillText(STATE.currentView === 'exact' ? 'Average passengers per bus' : 'Crowd level (%)', padding.left, isMobile ? 14 : 16);
+  const labelStep = chartW < 380 ? 48 : (chartW < 600 ? 36 : 24);
+  const endX = xAt(143);
+  const endLabel = isMobile ? formatTime(buckets[143].timestamp) : `${formatTime(buckets[143].timestamp)} SGT`;
+  const labelY = height - (isMobile ? 14 : 27);
   ctx.textAlign = 'center';
-  for (let i = 0; i < 144; i += labelStep) ctx.fillText(formatTime(buckets[i].timestamp), xAt(i), height - 27);
-  ctx.textAlign = 'right'; ctx.fillText(`${formatTime(buckets[143].timestamp)} SGT`, xAt(143), height - 27);
+  for (let i = 0; i < 144; i += labelStep) {
+    const x = xAt(i);
+    if (endX - x < 52) continue;
+    ctx.fillText(formatTime(buckets[i].timestamp), x, labelY);
+  }
+  ctx.textAlign = 'right'; ctx.fillText(endLabel, endX, labelY);
   for (const series of seriesMap.values()) {
     const values = valuesFor(series);
-    ctx.strokeStyle = series.color; ctx.lineWidth = series.code === 'CAMPUS_AVG' ? 3 : 2;
+    const rawValues = rawValuesFor(series);
+    ctx.strokeStyle = series.color; ctx.lineWidth = series.code === 'CAMPUS_AVG' ? (isMobile ? 2.5 : 3) : (isMobile ? 1.5 : 2);
     ctx.setLineDash(series.code === 'CAMPUS_AVG' ? [5, 3] : []);
     ctx.beginPath(); let previous = false;
     values.forEach((value, index) => {
@@ -337,13 +395,13 @@ function renderTimelineChart() {
     });
     ctx.stroke(); ctx.setLineDash([]);
     values.forEach((value, index) => {
-      if (value === null) return;
-      ctx.beginPath(); ctx.arc(xAt(index), yAt(value), STATE.hoveredIndex === index ? 4 : 2, 0, Math.PI * 2);
+      if (value === null || rawValues[index] === null) return;
+      ctx.beginPath(); ctx.arc(xAt(index), yAt(value), STATE.hoveredIndex === index ? (isMobile ? 3.5 : 4) : (isMobile ? 1.2 : 2), 0, Math.PI * 2);
       ctx.fillStyle = series.color; ctx.fill();
     });
   }
   if (!observed.length) {
-    ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'center'; ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'center'; ctx.font = isMobile ? '12px sans-serif' : '14px sans-serif';
     ctx.fillText(STATE.errors.history ? 'History could not be loaded' : 'No reported readings for this view', padding.left + chartW / 2, padding.top + chartH / 2);
   }
   if (STATE.hoveredIndex !== null) {
@@ -351,28 +409,43 @@ function renderTimelineChart() {
     ctx.moveTo(xAt(STATE.hoveredIndex), padding.top); ctx.lineTo(xAt(STATE.hoveredIndex), padding.top + chartH); ctx.stroke(); ctx.setLineDash([]);
   }
   setText('panelTimelineTitle', rolling ? 'Rolling 24-Hour Shuttle Readings' : `Shuttle Readings · ${STATE.selectedDate}`);
-  setText('panelTimelineSubtitle', `${buckets[0].label} → ${buckets[143].label} SGT · Gaps indicate missing readings`);
-  setText('chartDescription', STATE.errors.history ? `History unavailable: ${STATE.errors.history}` : `${observed.length} plotted readings in selected routes. Passenger counts are averages per bus; missing values remain unknown. All times are SGT.`);
-  canvas._chartMeta = { padding, chartW, chartH, seriesMap, buckets };
+  const subtitleSuffix = isSmoothed
+    ? '30-minute rolling average · Gaps indicate extended downtime'
+    : '10-minute intervals · Gaps indicate missing readings';
+  setText('panelTimelineSubtitle', `${buckets[0].label} → ${buckets[143].label} SGT · ${subtitleSuffix}`);
+  setText('chartDescription', STATE.errors.history ? `History unavailable: ${STATE.errors.history}` : `${rawObserved.length} plotted readings in selected routes. Passenger counts are averages per bus; missing values remain unknown. All times are SGT.`);
+  canvas._chartMeta = { padding, chartW, chartH, seriesMap, buckets, isSmoothed };
 }
 
 function setupChartInteractivity() {
   const canvas = $('timelineChart'), tooltip = $('chartTooltip');
-  canvas.addEventListener('mousemove', event => {
+  const handlePointer = (clientX, clientY) => {
     const meta = canvas._chartMeta;
     if (!meta) return;
-    const rect = canvas.getBoundingClientRect(), x = event.clientX - rect.left;
+    const rect = canvas.getBoundingClientRect(), x = clientX - rect.left;
     if (x < meta.padding.left || x > meta.padding.left + meta.chartW) { tooltip.style.display = 'none'; STATE.hoveredIndex = null; renderTimelineChart(); return; }
     const index = Math.max(0, Math.min(143, Math.round((x - meta.padding.left) / meta.chartW * 143)));
     STATE.hoveredIndex = index;
     const rows = [...meta.seriesMap.values()].filter(series => series.values[index] !== null || series.occupancies[index] !== null);
-    tooltip.innerHTML = `<strong>${escapeHtml(meta.buckets[index].label)} SGT</strong>${rows.length ? rows.map(series => `<div class="tooltip-row"><span style="color:${series.color}">${escapeHtml(series.code === 'CAMPUS_AVG' ? 'Observed Average' : series.code)}</span><span>${numberLabel(series.values[index])} pax · ${percentLabel(series.occupancies[index])}</span></div>`).join('') : '<p>No reported readings in this interval</p>'}`;
+    tooltip.innerHTML = `<strong>${escapeHtml(meta.buckets[index].label)} SGT</strong>${rows.length ? rows.map(series => {
+      const showRaw = meta.isSmoothed && series.rawValues[index] !== null && series.rawValues[index] !== series.values[index];
+      const rawText = showRaw ? ` <span class="tooltip-raw">(raw: ${numberLabel(series.rawValues[index])})</span>` : '';
+      return `<div class="tooltip-row"><span style="color:${series.color}">${escapeHtml(series.code === 'CAMPUS_AVG' ? 'Observed Average' : series.code)}</span><span>${numberLabel(series.values[index])} pax · ${percentLabel(series.occupancies[index])}${rawText}</span></div>`;
+    }).join('') : '<p>No reported readings in this interval</p>'}`;
     tooltip.style.display = 'block';
     tooltip.style.left = `${Math.max(0, Math.min(x + 12, rect.width - tooltip.offsetWidth))}px`;
-    tooltip.style.top = `${Math.min(event.clientY - rect.top + 12, Math.max(0, rect.height - tooltip.offsetHeight))}px`;
+    tooltip.style.top = `${Math.min(clientY - rect.top + 12, Math.max(0, rect.height - tooltip.offsetHeight))}px`;
     renderTimelineChart();
-  });
+  };
+  canvas.addEventListener('mousemove', event => handlePointer(event.clientX, event.clientY));
+  canvas.addEventListener('touchmove', event => {
+    if (event.touches?.length) handlePointer(event.touches[0].clientX, event.touches[0].clientY);
+  }, { passive: true });
+  canvas.addEventListener('touchstart', event => {
+    if (event.touches?.length) handlePointer(event.touches[0].clientX, event.touches[0].clientY);
+  }, { passive: true });
   canvas.addEventListener('mouseleave', () => { STATE.hoveredIndex = null; tooltip.style.display = 'none'; renderTimelineChart(); });
+  canvas.addEventListener('touchend', () => { STATE.hoveredIndex = null; tooltip.style.display = 'none'; renderTimelineChart(); });
 }
 
 function renderOptimizerView() {
@@ -407,23 +480,26 @@ function observedRouteSummaries() {
 }
 
 function renderHourlyBarChart() {
-  const chart = chartContext('hourlyBarChart', 260);
+  const containerW = $('hourlyBarChart')?.parentElement?.clientWidth || 1100;
+  const isMobile = containerW < 520;
+  const height = isMobile ? 200 : 260;
+  const chart = chartContext('hourlyBarChart', height);
   if (!chart) return;
   const { ctx, width } = chart;
-  const left = 50, top = 25, chartW = width - 70, chartH = 190;
+  const left = isMobile ? 38 : 50, top = 20, chartW = width - (isMobile ? 50 : 70), chartH = height - (isMobile ? 55 : 70);
   const rows = STATE.errors.analytics ? [] : STATE.analytics.campusHourly || [];
   const values = new Map(rows.map(row => [row.hour, numeric(row.avg_occupancy_pct)]));
   const maxY = Math.max(100, Math.ceil(Math.max(0, ...[...values.values()].filter(value => value !== null)) / 25) * 25);
-  ctx.font = '11px sans-serif'; ctx.textAlign = 'right';
+  ctx.font = isMobile ? '10px sans-serif' : '11px sans-serif'; ctx.textAlign = 'right';
   for (let i = 0; i <= 4; i++) {
     const value = maxY * i / 4, y = top + chartH * (1 - i / 4);
     ctx.strokeStyle = '#273553'; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + chartW, y); ctx.stroke();
-    ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}%`, left - 8, y + 4);
+    ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}%`, left - (isMobile ? 6 : 8), y + (isMobile ? 3 : 4));
   }
   for (let hour = 0; hour < 24; hour++) {
     const value = values.get(hour), x = left + hour * chartW / 24, barWidth = chartW / 24 * 0.65;
     ctx.textAlign = 'center'; ctx.fillStyle = '#94a3b8';
-    if (hour % (chartW < 500 ? 4 : 2) === 0) ctx.fillText(String(hour).padStart(2, '0'), x + barWidth / 2, top + chartH + 20);
+    if (hour % (chartW < 500 ? 4 : 2) === 0) ctx.fillText(String(hour).padStart(2, '0'), x + barWidth / 2, top + chartH + (isMobile ? 16 : 20));
     if (value === undefined || value === null) { ctx.fillText('·', x + barWidth / 2, top + chartH - 5); continue; }
     ctx.fillStyle = crowd(value).color;
     ctx.fillRect(x, top + chartH * (1 - value / maxY), barWidth, Math.max(2, value / maxY * chartH));
@@ -1039,10 +1115,15 @@ function renderVehicleDetailMap(bus) {
 }
 
 function renderVehicleDetailChart(bus) {
-  const chart = chartContext('vehicleTimelineChart', 240);
+  const containerW = $('vehicleTimelineChart')?.parentElement?.clientWidth || 700;
+  const isMobile = containerW < 520;
+  const height = isMobile ? 180 : 240;
+  const chart = chartContext('vehicleTimelineChart', height);
   if (!chart) return;
-  const { canvas, ctx, width, height } = chart;
-  const padding = { top: 24, right: 18, bottom: 42, left: 50 };
+  const { canvas, ctx, width } = chart;
+  const padding = isMobile
+    ? { top: 22, right: 14, bottom: 32, left: 38 }
+    : { top: 24, right: 18, bottom: 42, left: 50 };
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
   if (chartW <= 0 || chartH <= 0) return;
@@ -1155,14 +1236,19 @@ function renderVehicleDetailChart(bus) {
   ctx.fillStyle = '#94a3b8';
   ctx.fillText(`Route ${routeCode} Avg`, legX + 22, 14);
 
-  const step = chartW < 450 ? 48 : 24;
+  const step = chartW < 380 ? 48 : (chartW < 550 ? 36 : 24);
+  const endX = xAt(143);
+  const endLabel = isMobile ? formatTime(buckets[143].timestamp) : `${formatTime(buckets[143].timestamp)} SGT`;
+  const labelY = height - (isMobile ? 10 : 12);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#64748b';
   for (let i = 0; i < 144; i += step) {
-    ctx.fillText(formatTime(buckets[i].timestamp), xAt(i), height - 12);
+    const x = xAt(i);
+    if (endX - x < 50) continue;
+    ctx.fillText(formatTime(buckets[i].timestamp), x, labelY);
   }
   ctx.textAlign = 'right';
-  ctx.fillText(`${formatTime(buckets[143].timestamp)} SGT`, xAt(143), height - 12);
+  ctx.fillText(endLabel, endX, labelY);
 
   // Route baseline (dashed reference line)
   ctx.strokeStyle = '#475569';
@@ -1363,11 +1449,11 @@ function setupVehicleDashboardInteractivity() {
   const canvas = $('vehicleTimelineChart');
   const tooltip = $('vehicleChartTooltip');
   if (canvas) {
-    canvas.addEventListener('mousemove', event => {
+    const handleTimelinePointer = (clientX) => {
       const meta = canvas._chartMeta;
       if (!meta) return;
       const rect = canvas.getBoundingClientRect();
-      const x = event.clientX - rect.left;
+      const x = clientX - rect.left;
       if (x < meta.padding.left || x > meta.padding.left + meta.chartW) {
         if (tooltip) tooltip.style.display = 'none';
         STATE.vehicleHoveredIndex = null;
@@ -1394,25 +1480,33 @@ function setupVehicleDashboardInteractivity() {
           (primary !== null ? `<div class="tooltip-row"><span style="color:${meta.color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(primary)}${unit}</span></div>` : `<div>No reading for ${escapeHtml(meta.plate)}</div>`) +
           (baseline !== null ? `<div class="tooltip-row"><span style="color:#94a3b8">Route ${escapeHtml(meta.routeCode)} Avg</span><span>${numberLabel(baseline)}${unit}</span></div>` : '');
       }
-    });
-
-    canvas.addEventListener('mouseleave', () => {
+    };
+    canvas.addEventListener('mousemove', event => handleTimelinePointer(event.clientX));
+    canvas.addEventListener('touchmove', event => {
+      if (event.touches?.length) handleTimelinePointer(event.touches[0].clientX);
+    }, { passive: true });
+    canvas.addEventListener('touchstart', event => {
+      if (event.touches?.length) handleTimelinePointer(event.touches[0].clientX);
+    }, { passive: true });
+    const resetTimelinePointer = () => {
       if (tooltip) tooltip.style.display = 'none';
       STATE.vehicleHoveredIndex = null;
       const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
                   STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
       if (bus) renderVehicleDetailChart(bus);
-    });
+    };
+    canvas.addEventListener('mouseleave', resetTimelinePointer);
+    canvas.addEventListener('touchend', resetTimelinePointer);
   }
 
   const hourlyCanvas = $('vehicleHourlyBarChart');
   const hourlyTooltip = $('vehicleHourlyTooltip');
   if (hourlyCanvas) {
-    hourlyCanvas.addEventListener('mousemove', event => {
+    const handleHourlyPointer = (clientX) => {
       const meta = hourlyCanvas._hourlyMeta;
       if (!meta) return;
       const rect = hourlyCanvas.getBoundingClientRect();
-      const x = event.clientX - rect.left;
+      const x = clientX - rect.left;
       if (x < meta.padding.left || x > meta.padding.left + meta.chartW) {
         if (hourlyTooltip) hourlyTooltip.style.display = 'none';
         STATE.vehicleHourlyHoveredIndex = null;
@@ -1437,15 +1531,23 @@ function setupVehicleDashboardInteractivity() {
         hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
           (val !== null ? `<div class="tooltip-row"><span style="color:${crowd(val).color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(val)}% (${count} reading${count === 1 ? '' : 's'})</span></div>` : `<div>No readings for ${escapeHtml(meta.plate)}</div>`);
       }
-    });
-
-    hourlyCanvas.addEventListener('mouseleave', () => {
+    };
+    hourlyCanvas.addEventListener('mousemove', event => handleHourlyPointer(event.clientX));
+    hourlyCanvas.addEventListener('touchmove', event => {
+      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX);
+    }, { passive: true });
+    hourlyCanvas.addEventListener('touchstart', event => {
+      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX);
+    }, { passive: true });
+    const resetHourlyPointer = () => {
       if (hourlyTooltip) hourlyTooltip.style.display = 'none';
       STATE.vehicleHourlyHoveredIndex = null;
       const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
                   STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
       if (bus) renderVehicleHourlyBarChart(bus);
-    });
+    };
+    hourlyCanvas.addEventListener('mouseleave', resetHourlyPointer);
+    hourlyCanvas.addEventListener('touchend', resetHourlyPointer);
   }
 
   $('btnVehicleMetricCrowd')?.addEventListener('click', () => {
@@ -1554,7 +1656,8 @@ function setupFilters() {
   });
   for (const [id, dataName, stateKey, render] of [
     ['mapRouteFilterPills', 'mapRoute', 'mapRouteFilter', renderMapBuses], ['fleetRouteGroup', 'fleetFilter', 'fleetFilter', renderFleetGrid],
-    ['fleetStatusGroup', 'fleetStatus', 'fleetStatusFilter', renderFleetGrid], ['viewToggleGroup', 'view', 'currentView', renderTimelineChart]
+    ['fleetStatusGroup', 'fleetStatus', 'fleetStatusFilter', renderFleetGrid], ['viewToggleGroup', 'view', 'currentView', renderTimelineChart],
+    ['smoothingToggleGroup', 'smoothing', 'smoothing', renderTimelineChart]
   ]) $(id).addEventListener('click', event => {
     const button = event.target.closest('button'); if (!button?.dataset[dataName]) return;
     STATE[stateKey] = button.dataset[dataName];

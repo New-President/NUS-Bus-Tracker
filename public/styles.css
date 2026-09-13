@@ -618,6 +618,12 @@ canvas {
   min-width: 160px;
 }
 
+.tooltip-raw {
+  color: #94a3b8;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
 /* Legend footer */
 .chart-footer-legend {
   display: flex;
@@ -1213,6 +1219,9 @@ canvas {
     text-align: center;
     min-height: 34px;
     padding: 6px 10px !important;
+  }
+  .chart-wrapper {
+    padding: 10px 8px;
   }
   .canvas-container {
     min-height: 200px;
