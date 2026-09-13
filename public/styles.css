@@ -31,6 +31,32 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .connection-banner.is-success { border-color: #1d614e; background: #102b29; }
 .connection-banner.is-warning { border-color: #8c631d; background: #30271d; }
 .connection-banner.is-error { border-color: #8d424a; background: #302028; }
+.banner-close-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #94a3b8;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  padding: 0;
+  margin-left: auto;
+}
+.banner-close-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+  border-color: rgba(255, 255, 255, 0.32);
+}
+.banner-close-btn:active {
+  transform: scale(0.92);
+}
 .source-attribution { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: -4px 0 20px; font-size: 12px; color: var(--text-muted); }
 .source-attribution a { color: #7dd3fc; text-underline-offset: 3px; }
 .source-attribution p { flex-basis: 100%; }
@@ -83,6 +109,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+  width: 100%;
 }
 
 body {
@@ -935,22 +967,365 @@ canvas {
   color: #38bdf8;
 }
 
-/* Responsive */
+/* =========================================================================
+ * COMPREHENSIVE RESPONSIVE STYLES (MOBILE & TABLET COMPATIBILITY)
+ * ========================================================================= */
 @media (max-width: 768px) {
+  /* Header */
+  .app-header {
+    padding: 12px 14px;
+  }
   .header-container {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .brand-logo {
+    font-size: 13px;
+  }
+  .brand-text h1 {
+    font-size: 16px;
+    line-height: 1.2;
+  }
+  .subtitle {
+    font-size: 11px;
   }
   .header-actions {
     width: 100%;
-    justify-content: space-between;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .header-actions .btn,
+  .header-actions a.btn {
+    flex: 1 1 auto;
+    text-align: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+  .poller-pill {
+    width: 100%;
+    justify-content: center;
+    min-height: 32px;
+  }
+
+  /* Main Layout & Banners */
+  .main-layout {
+    padding: 12px 10px;
+  }
+  .connection-banner {
+    padding: 10px 14px;
+    gap: 10px;
+    font-size: 12px;
+    align-items: center;
+  }
+  .source-attribution {
+    font-size: 11px;
+    margin: -2px 0 14px;
+  }
+
+  /* Metric Cards Grid */
+  .summary-cards-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .metric-card {
+    padding: 12px 14px;
+  }
+  .metric-title {
+    font-size: 11px;
+  }
+  .metric-value {
+    font-size: 22px;
+  }
+  .metric-subtext {
+    font-size: 11px;
+  }
+
+  /* Tab Navigation - Smooth Touch Scroll */
+  .tab-nav {
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 4px;
+    margin-bottom: 16px;
+    padding-bottom: 2px;
+  }
+  .tab-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .tab-btn {
+    padding: 10px 14px;
+    font-size: 13px;
+    min-height: 44px;
+  }
+
+  /* Panels */
+  .panel {
+    padding: 14px 12px;
+    margin-bottom: 16px;
+    border-radius: 10px;
   }
   .panel-header-controls {
     flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
+  .panel-title {
+    font-size: 16px;
+  }
+  .panel-subtitle {
+    font-size: 12px;
+  }
+  .map-quick-stats {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  /* Map Filter Bar & Viewport */
   .map-filter-bar {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    padding: 10px 12px;
+    gap: 10px;
+  }
+  .map-filter-group {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 6px;
+  }
+  .map-route-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .map-pill {
+    padding: 6px 12px;
+    font-size: 12px;
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .map-filter-group select {
+    width: 100%;
+    max-width: 100%;
+    min-height: 38px;
+    font-size: 13px;
+  }
+  .checkbox-group {
+    margin-left: 0;
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .checkbox-label {
+    min-height: 36px;
+    font-size: 13px;
+  }
+  .map-viewport-container {
+    border-radius: 10px;
+  }
+  .leaflet-map-frame {
+    height: 52vh !important;
+    min-height: 320px;
+    max-height: 480px;
+  }
+  .map-floating-legend {
+    bottom: 8px;
+    right: 8px;
+    left: auto;
+    max-width: calc(100% - 16px);
+    padding: 8px 10px;
+    font-size: 11px;
+    gap: 4px;
+  }
+
+  /* Fleet Grid */
+  .fleet-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .fleet-search-group {
+    width: 100%;
+    min-width: 0;
+  }
+  .fleet-search-group input {
+    min-height: 38px;
+  }
+  .fleet-filter-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .fleet-filter-pills button {
+    min-height: 34px;
+    padding: 6px 10px;
+  }
+  .fleet-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .bus-card {
+    padding: 12px 14px;
+  }
+
+  /* Charts & Optimizer */
+  .optimizer-grid,
+  .settings-grid,
+  .route-comparison-cards {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 12px;
+  }
+  .chart-top-controls,
+  .control-group,
+  .date-picker-group {
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+  }
+  .date-picker-group select,
+  .date-picker-group input {
+    flex: 1 1 auto;
+    min-height: 36px;
+  }
+  .toggle-group {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .toggle-btn {
+    flex: 1 1 auto;
+    text-align: center;
+    min-height: 34px;
+    padding: 6px 10px !important;
+  }
+  .canvas-container {
+    min-height: 200px;
+  }
+  .table-scroll-container,
+  .diagnostics-table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    width: 100%;
+  }
+
+  /* Vehicle Modal Dialog */
+  .vehicle-modal-backdrop {
+    padding: 6px;
+  }
+  .vehicle-modal-container {
+    width: 100%;
+    max-height: 96vh;
+    border-radius: 10px;
+    margin: 0;
+  }
+  .vehicle-modal-header {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .vehicle-modal-title {
+    font-size: 16px;
+  }
+  .vehicle-modal-badge {
+    font-size: 13px;
+    padding: 4px 10px;
+  }
+  .vehicle-modal-close {
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
+  }
+  .vehicle-metrics-strip {
+    grid-template-columns: repeat(2, 1fr);
+    padding: 8px 10px;
+    gap: 6px;
+  }
+  .vehicle-metric-item {
+    padding: 5px 8px;
+  }
+  .vehicle-metric-val {
+    font-size: 12px;
+  }
+  .vehicle-modal-body {
+    padding: 10px 10px 14px;
+    gap: 10px;
+  }
+  .vehicle-dashboard-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .vehicle-dashboard-col {
+    padding: 10px 12px;
+  }
+  .vehicle-col-header {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .vehicle-chart-controls {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .vehicle-map-wrapper {
+    min-height: 200px;
+    height: 220px;
+  }
+  .vehicle-leaflet-map {
+    min-height: 200px;
+    height: 220px;
+  }
+  .vehicle-chart-wrapper {
+    min-height: 190px;
+    height: 200px;
+  }
+  .vehicle-hourly-section {
+    padding: 10px 12px;
+  }
+  .vehicle-hourly-chart-wrapper {
+    min-height: 110px;
+  }
+  .vehicle-chart-stats,
+  .vehicle-route-stats,
+  .vehicle-hourly-stats {
+    font-size: 10px;
+    gap: 6px;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Extra compact for 360-480px phone screens */
+  .summary-cards-grid {
+    grid-template-columns: 1fr;
+  }
+  .brand-text h1 {
+    font-size: 15px;
+  }
+  .header-actions .btn,
+  .header-actions a.btn {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+  .vehicle-metrics-strip {
+    grid-template-columns: 1fr 1fr;
+  }
+  .leaflet-map-frame {
+    height: 48vh !important;
+    min-height: 290px;
   }
 }
 

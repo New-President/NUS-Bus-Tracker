@@ -97,7 +97,14 @@ function dashboard() {
     layerGroup(layers = []) {
       const group = {
         layers: [...layers],
-        addTo() { layerGroups.push(this); return this; }
+        addTo() { layerGroups.push(this); return this; },
+        clearLayers() {
+          if (mapInstance) {
+            for (const l of this.layers) mapInstance.removeLayer(l);
+          }
+          this.layers = [];
+          return this;
+        }
       };
       return group;
     },
@@ -107,6 +114,9 @@ function dashboard() {
         setView(c, z) { this.center = c; this.zoom = z; return this; },
         fitBounds(b, opts) { this.bounds = b; this.fitBoundsOpts = opts; return this; },
         removeLayer(l) {
+          if (Array.isArray(l?.layers)) {
+            for (const child of [...l.layers]) this.removeLayer(child);
+          }
           const mIdx = markers.indexOf(l);
           if (mIdx !== -1) markers.splice(mIdx, 1);
           const pIdx = polylines.indexOf(l);
@@ -432,7 +442,7 @@ test('selecting a specific route filter traces out the route path on the Leaflet
     bus({ vehplate: 'PC5678B', route_code: 'D1', lat: 1.3038, lng: 103.7738 })
   ]);
   ui.initLeafletMap();
-  assert.equal(ui.polylines.length, 0);
+  assert.ok(ui.polylines.length >= 12, 'Default map load traces all routes across campus');
 
   // Switch to route A1
   ui.STATE.mapRouteFilter = 'A1';
@@ -652,5 +662,28 @@ test('setupVehicleDashboardInteractivity jump buttons change filters and switch 
   assert.ok(ui.STATE.activeRoutes.has('A1'));
 });
 
+test('btnCloseBanner dismisses the connection banner alert', async () => {
+  const ui = dashboard();
+  ui.setupActionButtons();
+  assert.equal(ui.element('connectionBanner').hidden, false);
 
+  await ui.element('btnCloseBanner').dispatch('click');
+  assert.equal(ui.element('connectionBanner').hidden, true);
+});
 
+test('chkMapRouteHighlights toggles route trace polylines on the map', async () => {
+  const ui = dashboard();
+  ui.setupFilters();
+  ui.initLeafletMap();
+  assert.ok(ui.polylines.length >= 12, 'Route polylines present by default');
+
+  // Toggle off
+  await ui.element('checkShowRouteHighlights').dispatch('change', { target: { checked: false } });
+  assert.equal(ui.STATE.mapShowHighlights, false);
+  assert.equal(ui.polylines.length, 0, 'Route polylines removed when unchecked');
+
+  // Toggle back on
+  await ui.element('checkShowRouteHighlights').dispatch('change', { target: { checked: true } });
+  assert.equal(ui.STATE.mapShowHighlights, true);
+  assert.ok(ui.polylines.length >= 12, 'Route polylines restored when checked');
+});

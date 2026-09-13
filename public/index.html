@@ -32,7 +32,7 @@
   <main class="main-layout">
     <div class="connection-banner is-info" id="connectionBanner" role="status">
       <p id="connectionMessage">Connecting to the telemetry service…</p>
-      <button class="btn btn-sm btn-secondary" type="button" id="btnRefreshData">Refresh</button>
+      <button class="banner-close-btn" type="button" id="btnCloseBanner" aria-label="Close notification" title="Close notification">✕</button>
     </div>
     <div class="source-attribution"><span>Source: <a id="sourceLink" href="https://univus.nus.edu.sg/" target="_blank" rel="noopener noreferrer">Checking current provider…</a></span><p id="coverageSummary">Counts cover observed vehicles. Coverage depends on the current source.</p><p id="providerWarning" class="provider-warning" hidden></p></div>
     <p class="action-message" id="actionMessage" role="status" aria-live="polite" hidden></p>
@@ -81,7 +81,7 @@
           <div class="map-filter-group"><span class="map-filter-label">Route:</span><div class="map-route-pills" id="mapRouteFilterPills"></div></div>
           <div class="map-filter-group"><label class="map-filter-label" for="selectBusVehicle">Vehicle:</label><select id="selectBusVehicle" class="form-select form-select-sm"><option value="all">All vehicles</option></select></div>
           <div class="map-filter-group"><label class="map-filter-label" for="selectMapCrowd">Occupancy:</label><select id="selectMapCrowd" class="form-select form-select-sm"><option value="all">All crowd levels</option><option value="low">Low (&lt;35%)</option><option value="medium">Medium (35–&lt;75%)</option><option value="high">High (≥75%)</option><option value="unknown">Unknown</option></select></div>
-          <div class="map-filter-group checkbox-group"><label class="checkbox-label"><input type="checkbox" id="checkShowStops" checked> Show reference stops</label></div>
+          <div class="map-filter-group checkbox-group"><label class="checkbox-label"><input type="checkbox" id="checkShowRouteHighlights" checked> Show route highlights</label><label class="checkbox-label"><input type="checkbox" id="checkShowStops" checked> Show reference stops</label></div>
         </div>
         <p class="data-note" id="mapDataMessage" role="status">Locations update only when the live feed is collected.</p>
         <div class="map-viewport-container"><div id="leafletMap" class="leaflet-map-frame" aria-label="Campus map"></div><div class="map-floating-legend"><div class="legend-title">Reported occupancy</div><div class="legend-row"><span class="legend-dot green"></span><span>Low &lt;35%</span></div><div class="legend-row"><span class="legend-dot yellow"></span><span>Medium 35–&lt;75%</span></div><div class="legend-row"><span class="legend-dot red"></span><span>High ≥75%</span></div><div class="legend-row"><span class="legend-dot unknown"></span><span>Unknown</span></div><div class="legend-row route-trace-legend" id="legendRouteTrace" hidden><span class="legend-line" id="legendRouteLine"></span><span id="legendRouteName">Route trace</span></div></div></div>

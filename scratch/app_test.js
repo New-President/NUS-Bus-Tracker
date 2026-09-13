@@ -737,8 +737,8 @@ function renderRouteTraceOnMap(force = false) {
     STATE.tracedRoute = 'all';
     if (legendTrace) legendTrace.hidden = true;
     const layers = [];
-    const allCampusRoutes = ['A1', 'A2', 'D1', 'D2', 'E', 'K'];
-    for (const code of allCampusRoutes) {
+    const activeCodes = Object.keys(STATE.routesMeta).length ? Object.keys(STATE.routesMeta).filter(c => NUS_ROUTE_PATHS[c]) : ['A1', 'A2', 'D1', 'D2', 'K'];
+    for (const code of activeCodes) {
       const coords = NUS_ROUTE_PATHS[code];
       if (!coords) continue;
       const color = routeColor(code);
