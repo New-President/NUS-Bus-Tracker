@@ -6,15 +6,13 @@
  *   node scripts/poll.js           # Run continuously every 10 minutes
  *   node scripts/poll.js --once    # Run a single poll and exit
  *
- * If TRACKER_URL is set, it polls the unauthenticated /api/cron HTTP endpoint.
- * Otherwise, it directly collects and persists observations using BusCollector.
+ * Directly collects and persists observations using BusCollector into the database.
  */
 
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { getDatabase } from '../src/db.js';
 import { BusCollector } from '../src/collector.js';
-import { pollScheduled } from './poll_scheduled.js';
 
 const INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -23,10 +21,6 @@ function nowIso() {
 }
 
 export async function runPollOnce({ env = process.env } = {}) {
-  if (env.TRACKER_URL?.trim()) {
-    return pollScheduled({ env });
-  }
-
   const db = getDatabase(env);
   const collector = new BusCollector(db, { env });
   const result = await collector.pollNow();
@@ -47,11 +41,7 @@ export function startPoller({ env = process.env, intervalMs = INTERVAL_MS } = {}
 
   console.log(`[${nowIso()}] [Poller] Starting JavaScript poller for uNivUS API.`);
   console.log(`[${nowIso()}] [Poller] Interval: ${intervalMs / 60000} minutes, authentication: none required.`);
-  if (env.TRACKER_URL?.trim()) {
-    console.log(`[${nowIso()}] [Poller] Target tracker: ${env.TRACKER_URL.trim()}`);
-  } else {
-    console.log(`[${nowIso()}] [Poller] Mode: Direct uNivUS API collection to database.`);
-  }
+  console.log(`[${nowIso()}] [Poller] Mode: Direct uNivUS API collection to database.`);
 
   async function executePoll() {
     if (!running || inFlight) return;

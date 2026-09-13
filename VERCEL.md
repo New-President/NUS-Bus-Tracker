@@ -59,27 +59,49 @@ A 502 from polling means the live feed or storage failed; check the dashboard di
 
 Collection runs every ten minutes using pure JavaScript without requiring any authentication or secrets:
 
-### Method A: Standalone Node.js poller script
+### Method A: GitHub Actions / Background Poller (Recommended)
+### Method A: GitHub Actions Poller (Recommended)
 
-Run the included JavaScript poller on any machine, container, or background runner:
+Run the included JavaScript poller on GitHub Actions or any background runner with Turso credentials:
+The repository includes `.github/workflows/poll.yml`, which runs `node scripts/poll.js --once` and writes directly to Turso.
 
 ```powershell
-# Set TRACKER_URL to your Vercel origin to poll the deployment over HTTP
-$env:TRACKER_URL = 'https://YOUR-PROJECT.vercel.app'
+npm run poll -- --once
+Add these **Repository Secrets** under **Settings > Secrets and variables > Actions > Secrets**:
+
+| Secret | Value |
+| --- | --- |
+| `TURSO_DATABASE_URL` | Your Turso database URL |
+| `TURSO_AUTH_TOKEN` | A read/write Turso database token |
+
+Optional **Actions Variables** under **Settings > Secrets and variables > Actions > Variables**: `BUS_PROVIDER`, `FMS_ROUTES`, and `BUS_STOPS`. They default to `auto`, `A1,A2,D1,D2,E,K`, and `UTOWN,KR-MRT`.
+
+The workflow is configured with `workflow_dispatch`, allowing external webhook schedulers like [cron-job.org](https://cron-job.org) to trigger it reliably via GitHub's API every 10 minutes:
+```http
+POST https://api.github.com/repos/OWNER/REPO/actions/workflows/poll.yml/dispatches
+Authorization: Bearer YOUR_GITHUB_PAT
+Content-Type: application/json
+
+{"ref":"main"}
+```
+
+Or run continuously on a server or container:
+### Method B: Standalone Poller Script
+
+Run the included JavaScript poller on any background server, container, or VM with Turso credentials:
+
+```powershell
+# Run a single poll cycle and exit
+npm run poll -- --once
+
+# Or run continuously as a 10-minute daemon
 npm run poll
 ```
 
-Or run directly:
+The script connects directly to the uNivUS API and writes observations to your Turso database. Pass `--once` if you only want to execute a single poll cycle (`node scripts/poll.js --once`).
+### Method C: Unauthenticated HTTP Cron Endpoint
 
-```powershell
-node scripts/poll.js
-```
-
-The script polls immediately on startup, then continues polling every 10 minutes without authentication. Pass `--once` if you only want to execute a single poll cycle (`node scripts/poll.js --once`).
-
-### Method B: Browser client-side automatic polling
-
-When the dashboard is open in any browser tab, client-side JavaScript automatically polls the uNivUS API every 10 minutes (and on initial load if data is stale) without authentication.
+You can trigger a poll from any webhook or cron runner by sending a plain `GET` request without authentication headers:
 
 ### Method C: Unauthenticated HTTP endpoint
 

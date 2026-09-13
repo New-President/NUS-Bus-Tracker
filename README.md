@@ -1,102 +1,172 @@
 # NUS Shuttle Bus Crowd Tracker
 
-A Node.js application that queries uNivUS directly for real NUS shuttle positions and passenger loads, stores observations in shared Turso storage, and shows recorded crowd patterns. The backend uses Node modules and the libSQL HTTP client; the map uses Leaflet and external map tiles.
+A Node.js application that queries uNivUS directly for real-time NUS shuttle bus positions, speeds, passenger loads, and crowd levels, stores observations in shared Turso storage, and visualizes live vehicle tracking and historical commute analytics. The backend uses Node.js with the libSQL HTTP client for Turso; the frontend uses Leaflet for interactive campus mapping, high-precision road-snapped route tracing, and Chart.js-style canvas visualizations.
 
-## Run locally
+---
 
-Use Node.js 24 (also selected for Vercel) and a Turso database. Install dependencies, create a local environment file, and fill in its values:
+## Features
+
+- **Live Campus Shuttle Map**: Real-time GPS locations and bearing markers for all active NUS shuttle buses across Kent Ridge campus.
+- **Road-Snapped Route Traces**: Realistic, high-resolution route highlights for routes `A1`, `A2`, `D1`, `D2`, `K`, `R1`, and `R2` that trace actual campus roads (snapped to road networks without cutting through buildings). Includes a toggle checkbox (`Show Route Highlights`) on the map.
+- **Vehicle Telemetry & Analytics Dashboard**: Detailed modal inspection for individual buses showing plate number, route badge, live coordinates, speed, load factor, passenger headcount, and 24-hour occupancy/pax trend graphs.
+- **Direct Official uNivUS Integration**: Authenticates as guest via official uNivUS API endpoints; no student login, manual API key, or expiring user credentials needed.
+- **Durable Turso Storage**: Centralized libSQL database storing historical observations, aggregate hourly occupancy, and fleet states across Vercel serverless deployments.
+- **Mobile Responsive Design**: Clean, responsive layout optimized for desktop, tablet, and mobile browsers with fluid touch controls and collapsible filters.
+- **Dismissible Live Status Banner**: Dismissible connection status alert with one-click close button.
+- **Automated Background Polling**: Built for serverless deployment with a GitHub Actions workflow (`.github/workflows/poll.yml`) that can be triggered on schedule (e.g., via cron-job.org or native cron) to poll uNivUS and write directly to Turso DB.
+
+---
+
+## Quick Start (Run Locally)
+
+Requires **Node.js 24+** and a **Turso database**.
 
 ```powershell
 npm.cmd ci
 Copy-Item .env.example .env
-# Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in .env before starting.
+# Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in .env
 npm.cmd start
 ```
 
-Both Turso variables are required locally and on Vercel. Use a separate development database for local work. `npm start` loads `.env` automatically; variables already set in your shell take precedence.
+1. Create a free database at [Turso](https://app.turso.tech/) and set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in `.env`.
+2. Run `npm start`. The server starts at `http://127.0.0.1:3000`.
+3. Open `http://127.0.0.1:3000` in your browser. Click **Poll Now** to perform an immediate live collection.
 
-For local use at `http://127.0.0.1:3000`, leave `ADMIN_TOKEN` and `CRON_SECRET` blank unless you intentionally configure them. Any nonempty `ADMIN_TOKEN` requires that same value in **Data & API Settings > Dashboard admin token** before manual collection, even locally. Set real random secrets in Vercel. Restart the server after changing `.env`.
+---
 
-Open http://127.0.0.1:3000. Choose **Poll Now** to collect immediately. Default automatic mode uses the official uNivUS web application's guest session; no NUS account login, bus API key, or manual token is required. Collection runs every ten minutes while the server is running.
+## Polling Architecture
 
-The session is renewed after 23 hours 45 minutes, or earlier if a returned cookie expires. The fifteen-minute margin allows a ten-minute poller to renew within the daily cycle. The dashboard shows the planned renewal time; it does not invent an expiry for opaque session cookies. A rejected session triggers one new guest login and retry. Concurrent routes share authentication.
+Bus telemetry is collected and stored in Turso DB through automated or on-demand execution:
 
-The server binds to loopback by default. Set `HOST` and `PORT` to change the listening address; a busy port produces an error.
+1. **GitHub Actions (Recommended for Production)**:
+   - Workflow file: `.github/workflows/poll.yml`
+   - Runs `npm run poll -- --once` (`node scripts/poll.js --once`).
+   - Triggerable on a schedule via cron or external webhooks (e.g. `cron-job.org` via GitHub repository dispatch).
+   - Direct connection: connects directly to uNivUS, normalizes telemetry, and writes records straight to Turso DB.
+2. **On-Demand Poller Command**:
+   - `npm run poll -- --once`: Executes a single poll cycle, logs records count, and exits.
+   - `npm run poll`: Runs a continuous 10-minute polling daemon in Node.js.
+3. **Web Dashboard (Reader)**:
+   - The web app fetches `/api/live` and `/api/history` every 30 seconds to refresh the interface.
+   - Contains an on-demand **Poll Now** button for administrative manual refreshes.
+4. **HTTP Cron Endpoint**:
+   - `GET /api/cron` triggers an immediate collection cycle in hosted serverless environments.
 
-## Direct uNivUS connection
+---
 
-The adapter follows **Continue as Guest** in the [official uNivUS web app](https://univus.nus.edu.sg/):
+## Direct uNivUS Connection
 
-1. `GET https://inetapps.nus.edu.sg/univus/web/api/login/loginPublic` creates a guest session.
-2. Session cookies and the issued request-verification token remain in server memory.
-3. `POST https://inetapps.nus.edu.sg/univus/web/api/esb` queries `methodpath: /univus/api/bus-proxy/active-bus` with each configured `route_code`.
+The adapter emulates the **Continue as Guest** flow in the [official uNivUS web app](https://univus.nus.edu.sg/):
 
-The verified response contains `data.activebus` with positions and optional `loadInfo` measurements. The public guest flow is visible in the official [web application source](https://inetapps.nus.edu.sg/univus/web/main.dart.js). The modern bus-proxy path through that session was verified with a live A1 query on 2026-09-11. This uses the NUS-hosted API directly; no community server is involved in a successful direct query.
+1. `GET https://inetapps.nus.edu.sg/univus/web/api/login/loginPublic` creates an official guest session.
+2. Session cookies and anti-forgery tokens are held securely in memory.
+3. `POST https://inetapps.nus.edu.sg/univus/web/api/esb` queries the modern ESB proxy endpoint (`/univus/api/bus-proxy/active-bus`) for each route code (`A1`, `A2`, `D1`, `D2`, `K`, etc.).
+4. The response yields `data.activebus` containing precise latitude/longitude, speed, capacity, ridership, and crowd levels.
+5. Sessions renew automatically within a 24-hour cycle or when response cookies expire. If a session is rejected, the client re-authenticates and retries.
 
-Guest cookies are never written to the database, returned by dashboard APIs, included in logs, or forwarded to another host. Login redirects are validated without being followed, and authenticated requests use a fixed official origin. Renewing a session does not require credentials from the older ConnectX integration.
+---
 
-## Collection and data quality
+## Data Quality & Reliability
 
-- All configured route requests must succeed before a direct batch is stored. Each request has an eight-second deadline and a two-megabyte response limit. Missing, invalid, future, or more-than-two-minute-old uNivUS timestamps are rejected; reported bus counts must match the returned array when supplied.
-- Default `auto` mode can use the labelled public arrivals source at `bus.hewliyang.com` during a uNivUS outage, retrying direct access at the next poll. Explicit `univus` mode reports direct failures without switching providers. Failed collection preserves the previous successful batch and its history.
-- Public fallback coverage includes only vehicles appearing in current/next arrivals at `UTOWN` and `KR-MRT` by default. It supplies passenger readings but no GPS or speed. It requires fresh, healthy responses from all monitored stops. The [community client](https://github.com/hewliyang/nus-nextbus-web) has announced sunset maintenance, so this fallback has no service guarantee.
-- Missing counts, capacity, occupancy, speed, and coordinates remain unknown. Occupancy can be calculated from reported passenger count and capacity; passenger counts are never inferred from occupancy. The direct API's occupancy field is interpreted as a ratio. Measured zero remains zero.
-- Duplicate vehicle plates are counted once per batch. Conflicting route assignments in public arrivals are omitted. Counts describe observed vehicles, and absence from a batch does not establish where a bus is parked or whether it is operating.
-- Successful empty responses record empty batches and clear currently reported vehicles. Observations older than fifteen minutes are stale. Historical fleet entries retain their last known measurements and location.
-- History preserves gaps and uses **Asia/Singapore** dates. Hourly crowd summaries cover the last seven days with measurement counts; they describe past observations rather than guaranteed future crowd levels or seats.
-- Every batch retains its actual provider and coverage. CSV exports include `source_provider`, `data_coverage`, and `monitored_stops`. Unknown values stay empty; text is quoted and spreadsheet formulas are neutralized. The default export contains the latest 10,000 rows; `/api/export?limit=100000` raises the cap.
+- **Strict Validation**: Timestamps must be valid and within two minutes of current time. Active bus counts in payload headers must match the reported vehicles.
+- **Fail-Safe History**: If a collection fails or uNivUS is temporarily unreachable, existing historical observations are preserved.
+- **Community Fallback**: If configured in `auto` mode, an outage can fall back to the public arrivals feed (`bus.hewliyang.com`) for monitored stops (`UTOWN`, `KR-MRT`).
+- **Telemetry Sanitization**: Missing readings stay `null` (never fabricated). Genuine zero values (0 km/h speed, 0 ridership) are preserved as `0`.
+- **Deduplication**: Multi-route overlapping vehicle plates are counted once per poll batch.
+- **Stale Expiry**: Observations older than 15 minutes are moved to historical fleet status.
+- **Time Zone Consistency**: All historical analytics and timestamps are formatted in **Asia/Singapore** time (UTC+8).
 
-## Configuration
+---
 
-| Variable | Purpose |
-| --- | --- |
-| `BUS_PROVIDER` | `auto` (default): direct uNivUS with public fallback; `univus`: direct uNivUS only; `community`: public arrivals only; `connectx`: older ConnectX integration only. |
-| `FMS_ROUTES` | Comma-separated route identifiers shared by the adapters; default `A1,A2,D1,D2,E,K`. |
-| `BUS_STOPS` | One to five public stop identifiers; default `UTOWN,KR-MRT`. Applies only to public coverage. |
-| `UNIVUS_HTD_API`, `UNIVUS_APP_API` | Optional public-app identifier overrides for the older ConnectX authentication flow only. |
-| `UNIVUS_APP_VERSION` | Older ConnectX guest client version; default `2.56.0`. |
-| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Required Turso database URL and read/write token for both local and hosted operation. |
-| `HOST` | Local server bind address; default `127.0.0.1`. |
-| `PORT` | Local HTTP port; default `3000`. |
-| `ADMIN_TOKEN` | Bearer credential for polling, settings, and history deletion. Required for remote administrative access. |
-| `CRON_SECRET` | Separate bearer credential required for `GET /api/cron`. |
+## Configuration (`.env`)
 
-`npm start` loads `.env` when present and preserves variables already set in the process environment. On Vercel, configure variables in project settings. The optional administrator token entered in the dashboard stays in page memory. Read-only telemetry endpoints are public to anyone who can reach the server. Local writes without `ADMIN_TOKEN` require loopback, a localhost Host header, and the same origin. Hosted writes require `ADMIN_TOKEN`.
+| Variable | Description | Default |
+| --- | --- | --- |
+| `TURSO_DATABASE_URL` | **Required.** Turso database URL (`libsql://...` or `https://...`). | — |
+| `TURSO_AUTH_TOKEN` | **Required.** Read/write auth token for your Turso database. | — |
+| `BUS_PROVIDER` | Data source mode: `auto` (default, direct uNivUS with community fallback), `univus` (direct only), `community`, or `connectx`. | `auto` |
+| `FMS_ROUTES` | Comma-separated route codes to collect. | `A1,A2,D1,D2,E,K` |
+| `BUS_STOPS` | Monitored stop codes for community fallback mode. | `UTOWN,KR-MRT` |
+| `ADMIN_TOKEN` | Optional bearer secret for administrative settings modification and data deletion. | — |
+| `HOST` | Bind address for local development server. | `127.0.0.1` |
+| `PORT` | Port for local development server. | `3000` |
 
-The older [documented guest/FMS flow](https://suibianp.github.io/nus-nextbus-new-api/) remains available in explicit `connectx` mode: get-access-token, buswidget initialization, then guest token for ConnectX requests. Its documented ActiveBus query returned error 4 during verification; the default integration now queries uNivUS directly.
+---
 
-## Checks
+## Verification & Automated Tests
+
+All tests run in completely isolated environments using in-memory databases and offline HTTP mocks. Tests never touch your live Turso database or external providers.
 
 ```powershell
-npm.cmd test
-npm.cmd run build
-npm.cmd run verify-live -- --direct
+# Run the complete test suite (151 tests)
+npm test
+
+# Run frontend UI, Leaflet map, and contract tests (26 tests)
+node tests/test_frontend.js
+
+# Run codebase syntax and asset integrity check (30 files)
+npm run check
+
+# Verify direct uNivUS live feed connectivity without writing to DB
+npm run verify-live -- --direct
 ```
 
-Tests use isolated databases and controlled HTTP responses, never your credentials or the live provider. They cover session creation and renewal, concurrent re-authentication, cookie boundaries, missing measurements, stale data, atomic batches, Turso configuration and persistence, Singapore dates, API validation, CSV escaping, administrative access, serverless behavior, and frontend rendering.
+---
 
-`verify-live` exercises one configured route using the selected provider and prints safe source/coverage/measurement diagnostics without database writes. `--direct` forces uNivUS without a fallback; `--connectx` checks the older integration. Session renewal timestamps are planned renewal times, not verified server-side cookie expiry times.
+## Project Structure
 
-## Files
+```
+NUS-Bus-Tracker/
+├── .github/
+│   └── workflows/
+│       └── poll.yml              # Scheduled GitHub Actions poller (npm run poll -- --once)
+├── api/
+│   └── index.js                  # Vercel serverless request handler
+├── public/
+│   ├── app.js                    # Frontend logic: Leaflet map, bus markers, road polylines, charts
+│   ├── favicon.svg               # Application bus icon
+│   ├── index.html                # Responsive dashboard UI layout & navigation
+│   └── style.css                 # Dark theme, mobile responsive styles, modals
+│   └── styles.css                # Dark theme, mobile responsive styles, modals
+├── scripts/
+│   ├── check.js                  # Linter and asset integrity validator
+│   ├── poll.js                   # Standalone poller (supports --once for CI/cron)
+│   ├── server.js                 # Local development HTTP server runner
+│   └── verify_live.js            # Live uNivUS telemetry diagnostic test tool
+├── src/
+│   ├── api_client.js             # Telemetry normalizer & ConnectX fallback
+│   ├── collector.js              # Polling orchestrator & batch recorder
+│   ├── database_errors.js        # Safe Turso error mapping
+│   ├── db.js                     # Database client factory
+│   ├── db_shared.js              # Shared SQL parameter sanitization & batching
+│   ├── provider_config.js        # Provider configuration validation
+│   ├── provider_http.js          # Bounded HTTP fetcher with timeout/size limits
+│   ├── public_feed.js            # Community arrival fallback provider
+│   ├── remote_db.js              # Turso SQL schema, queries, and analytics
+│   ├── routes.js                 # Canonical Kent Ridge route identifiers
+│   ├── server.js                 # Universal HTTP request routing & API endpoints
+│   ├── univus_auth.js            # Legacy ConnectX guest token provider
+│   └── univus_client.js          # Official uNivUS ESB API client (ActiveBus)
+├── tests/                        # 151 unit & integration tests
+│   ├── database_fixture.js       # In-memory libSQL fixture for isolated testing
+│   ├── no_provider_network.js    # Network isolation guard for tests
+│   ├── run_all_tests.js          # Main test runner invoked by npm test
+│   ├── test_database.js          # Unit tests for Turso SQL query logic
+│   ├── test_frontend.js          # DOM, Leaflet map, chart, and HTML contract tests
+│   ├── test_public_feed.js       # Community arrival parsing tests
+│   ├── test_remote_database.js   # Turso transactions, schema migrations & concurrency
+│   ├── test_server_endpoints.js  # HTTP API endpoint tests (/api/live, /api/history)
+│   ├── test_suite.js             # Data normalization & collector recovery tests
+│   ├── test_univus_auth.js       # ConnectX token provider tests
+│   ├── test_univus_client.js     # uNivUS ESB API parsing & session tests
+│   └── test_vercel_handler.js    # Serverless deployment edge case tests
+├── package.json                  # Dependencies, test scripts, and Node 24 requirement
+├── VERCEL.md                     # Deployment guide for Vercel + Turso
+└── vercel.json                   # Vercel deployment configuration
+```
 
-- `src/univus_client.js`: direct official guest sessions, daily renewal, and bus-proxy queries.
-- `src/univus_auth.js`: older public guest/FMS authentication, used only for ConnectX mode.
-- `src/api_client.js`: ConnectX requests and shared telemetry normalization.
-- `src/public_feed.js`: public arrival fallback, freshness checks, and deduplication.
-- `src/provider_config.js`: source selection and coverage descriptions.
-- `src/provider_http.js`: bounded JSON requests and sanitized errors.
-- `src/collector.js`: collection, scheduling, provider selection, and diagnostics.
-- `src/db.js`: Turso connection creation and configuration validation.
-- `src/remote_db.js` and `src/db_shared.js`: durable Turso storage, shared schema and validation, atomic batches, and analytics.
-- `src/routes.js`: configured route identifiers and display colors.
-- `src/server.js` and `api/index.js`: local and serverless API handlers.
-- `public/`: dashboard, charts, map, and styles.
-- `tests/`: isolated regression suites.
+---
 
-The app creates its tables in a new Turso database and accepts the current schema version. Unsupported existing schemas are rejected without modifying their data. No history is generated at startup.
+## Deployment
 
-See [VERCEL.md](VERCEL.md) for step-by-step Vercel deployment. Bus data is polled every 10 minutes using pure JavaScript without requiring any authentication secrets:
-- **Node.js poller script**: Run `npm run poll` (or `node scripts/poll.js`) to continuously poll the uNivUS API every 10 minutes without authentication.
-- **Local server collector**: When running `npm start`, the server automatically collects from the uNivUS API every 10 minutes.
-- **Browser-based polling**: When the dashboard is open, client-side JavaScript automatically collects every 10 minutes and on page load if data is stale.
-- **Unauthenticated endpoint**: `GET /api/cron` can be called by any JavaScript client or runner without authentication headers. Turso is required; there is no local database fallback.
+See [VERCEL.md](VERCEL.md) for full instructions on deploying the dashboard to Vercel and setting up the Turso database and GitHub Actions cron poller.

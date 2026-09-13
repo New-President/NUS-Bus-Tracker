@@ -1620,30 +1620,9 @@ function setupActionButtons() {
   });
 }
 
-async function pollUnivusApi() {
-  if (STATE.polling) return;
-  STATE.polling = true;
-  renderStatus();
-  try {
-    const data = await requestJson('/api/cron');
-    showAction(`Live collection complete: ${numberLabel(data.recordsCount ?? data.polledCount)} vehicle readings.`);
-  } catch {
-    // Background polling updates status silently
-  } finally {
-    STATE.polling = false;
-    if (STATE.refreshPromise) await STATE.refreshPromise;
-    await refreshAllData();
-  }
-}
-
 document.addEventListener('DOMContentLoaded', async () => {
   setupTabs(); setupFilters(); setupActionButtons(); setupChartInteractivity(); setupVehicleDashboardInteractivity();
   await refreshAllData();
-  if (telemetryStale()) {
-    void pollUnivusApi();
-  }
-  // Automatically poll uNivUS API every 10 minutes in JavaScript without authentication
-  setInterval(() => { if (!document.hidden) pollUnivusApi(); }, 10 * 60 * 1000);
   setInterval(() => { if (!document.hidden) refreshAllData(); }, 30000);
   setInterval(() => { if (!document.hidden) { renderCountdown(); if (telemetryStale()) { renderStatus(); renderSummaryCards(); } } }, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAllData(); });
