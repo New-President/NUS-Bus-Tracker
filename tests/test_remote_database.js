@@ -223,7 +223,7 @@ test('remote observations preserve provenance, Singapore dates and measured anal
   const dates = await db.getAvailableDates();
   assert.deepEqual(dates, [midnight, midnight - DAY_MS].map(value => new Date(value + SINGAPORE_OFFSET).toISOString().slice(0, 10)));
   const history = await db.get24HourHistory(midnight - 60000, end);
-  assert.deepEqual(history.campusData.map(row => row.time_str), ['23:50', '00:00', '00:10']);
+  assert.deepEqual(history.campusData.map(row => row.time_str), ['23:55', '00:05', '00:15']);
   assert.deepEqual(history.campusData.map(row => row.avg_occupancy_pct), [null, 0, 80]);
   assert.deepEqual(history.campusData.map(row => row.sample_count), [1, 1, 2]);
   const analytics = await db.getCommuteOptimizationAnalytics(midnight - 60000, end);

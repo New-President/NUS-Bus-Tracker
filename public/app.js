@@ -2,8 +2,9 @@
 'use strict';
 
 const TIME_ZONE = 'Asia/Singapore';
-const BUCKET_MS = 10 * 60 * 1000;
+const BUCKET_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const BUCKETS_COUNT = Math.round(DAY_MS / BUCKET_MS); // 288 for 5m intervals
 const $ = id => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -100,7 +101,7 @@ function telemetryStale() {
   const timestamp = STATE.live.lastPolledAt ?? STATE.status.lastPolledAt;
   return !!(STATE.errors.live || STATE.errors.status || STATE.live.isStale || STATE.status.isStale ||
     ['error', 'pending'].includes(STATE.status.connectionState) ||
-    (timestamp && Date.now() - new Date(timestamp).getTime() > (STATE.status.pollingIntervalSec || 600) * 1500));
+    (timestamp && Date.now() - new Date(timestamp).getTime() > (STATE.status.pollingIntervalSec || 300) * 1500));
 }
 function emptyMarkup(message) { return `<p class="empty-state">${escapeHtml(message)}</p>`; }
 function setText(id, value) { if ($(id)) $(id).textContent = value; }
@@ -247,7 +248,18 @@ function renderStatus() {
 
 function renderCountdown() {
   if (STATE.polling || STATE.status.isPolling) return setText('pollerCountdown', 'Collecting live readings');
-  if (STATE.status.collectionMode === 'on-demand') return setText('pollerCountdown', 'On-demand / external schedule');
+  const timestamp = STATE.live.lastPolledAt ?? STATE.status.lastPolledAt;
+  const intervalSec = STATE.status.pollingIntervalSec || 300;
+  if (STATE.status.collectionMode === 'on-demand') {
+    if (timestamp) {
+      const elapsedSec = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000);
+      const remainingSec = Math.max(0, intervalSec - elapsedSec);
+      return setText('pollerCountdown', remainingSec > 0
+        ? `Next cron pull: ${Math.floor(remainingSec / 60)}m ${String(remainingSec % 60).padStart(2, '0')}s`
+        : 'Cron pull due');
+    }
+    return setText('pollerCountdown', `Every ${Math.round(intervalSec / 60)}m schedule`);
+  }
   if (!STATE.nextPollAt) return setText('pollerCountdown', 'Awaiting next pull');
   const seconds = Math.max(0, Math.ceil((STATE.nextPollAt - Date.now()) / 1000));
   setText('pollerCountdown', seconds ? `Next pull: ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : 'Next pull due');
@@ -323,22 +335,24 @@ function renderTimelineChart() {
   const rolling = STATE.timeMode === 'rolling';
   const isSmoothed = STATE.smoothing === 'smoothed';
   const range = STATE.history24h.queryRange || {};
-  const start = rolling ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - 143 * BUCKET_MS : new Date(`${STATE.selectedDate}T00:00:00+08:00`).getTime();
-  const buckets = Array.from({ length: 144 }, (_, i) => ({ timestamp: start + i * BUCKET_MS, label: formatTime(start + i * BUCKET_MS, true) }));
+  const count = BUCKETS_COUNT;
+  const lastIdx = count - 1;
+  const start = rolling ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - lastIdx * BUCKET_MS : new Date(`${STATE.selectedDate}T00:00:00+08:00`).getTime();
+  const buckets = Array.from({ length: count }, (_, i) => ({ timestamp: start + i * BUCKET_MS, label: formatTime(start + i * BUCKET_MS, true) }));
   const seriesMap = new Map();
   for (const code of ['CAMPUS_AVG', ...routeCodes()]) {
     if (STATE.activeRoutes.has(code)) {
       seriesMap.set(code, {
         code, color: routeColor(code),
-        rawValues: Array(144).fill(null), rawOccupancies: Array(144).fill(null),
-        values: Array(144).fill(null), occupancies: Array(144).fill(null)
+        rawValues: Array(count).fill(null), rawOccupancies: Array(count).fill(null),
+        values: Array(count).fill(null), occupancies: Array(count).fill(null)
       });
     }
   }
   const populate = (row, code) => {
     const series = seriesMap.get(code);
     const index = Math.floor((row.bucket_ts - start) / BUCKET_MS);
-    if (!series || index < 0 || index >= 144) return;
+    if (!series || index < 0 || index >= count) return;
     series.rawValues[index] = numeric(row.avg_ridership);
     series.rawOccupancies[index] = numeric(row.avg_occupancy_pct);
     series.values[index] = numeric(row.avg_ridership);
@@ -357,7 +371,7 @@ function renderTimelineChart() {
   const rawObserved = [...seriesMap.values()].flatMap(rawValuesFor).filter(value => value !== null);
   const observed = [...seriesMap.values()].flatMap(valuesFor).filter(value => value !== null);
   const maxY = STATE.currentView === 'exact' ? Math.max(10, Math.ceil(Math.max(0, ...observed) / 10) * 10) : Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25);
-  const xAt = index => padding.left + index / 143 * chartW;
+  const xAt = index => padding.left + index / lastIdx * chartW;
   const yAt = value => padding.top + chartH * (1 - value / maxY);
   if (STATE.currentView === 'crowd') {
     for (const [from, to, color] of [[0, 35, 'rgba(16,185,129,.08)'], [35, 75, 'rgba(245,158,11,.08)'], [75, maxY, 'rgba(239,68,68,.08)']]) {
@@ -371,12 +385,12 @@ function renderTimelineChart() {
     ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}${STATE.currentView === 'exact' ? '' : '%'}`, padding.left - (isMobile ? 6 : 8), y + (isMobile ? 3 : 4));
   }
   ctx.textAlign = 'left'; ctx.fillText(STATE.currentView === 'exact' ? 'Average passengers per bus' : 'Crowd level (%)', padding.left, isMobile ? 14 : 16);
-  const labelStep = chartW < 380 ? 48 : (chartW < 600 ? 36 : 24);
-  const endX = xAt(143);
-  const endLabel = isMobile ? formatTime(buckets[143].timestamp) : `${formatTime(buckets[143].timestamp)} SGT`;
+  const labelStep = chartW < 380 ? Math.round(count / 3) : (chartW < 600 ? Math.round(count / 4) : Math.round(count / 6));
+  const endX = xAt(lastIdx);
+  const endLabel = isMobile ? formatTime(buckets[lastIdx].timestamp) : `${formatTime(buckets[lastIdx].timestamp)} SGT`;
   const labelY = height - (isMobile ? 14 : 27);
   ctx.textAlign = 'center';
-  for (let i = 0; i < 144; i += labelStep) {
+  for (let i = 0; i < count; i += labelStep) {
     const x = xAt(i);
     if (endX - x < 52) continue;
     ctx.fillText(formatTime(buckets[i].timestamp), x, labelY);
@@ -411,10 +425,44 @@ function renderTimelineChart() {
   setText('panelTimelineTitle', rolling ? 'Rolling 24-Hour Shuttle Readings' : `Shuttle Readings · ${STATE.selectedDate}`);
   const subtitleSuffix = isSmoothed
     ? '30-minute rolling average · Gaps indicate extended downtime'
-    : '10-minute intervals · Gaps indicate missing readings';
-  setText('panelTimelineSubtitle', `${buckets[0].label} → ${buckets[143].label} SGT · ${subtitleSuffix}`);
+    : '5-minute intervals · Gaps indicate missing readings';
+  setText('panelTimelineSubtitle', `${buckets[0].label} → ${buckets[lastIdx].label} SGT · ${subtitleSuffix}`);
   setText('chartDescription', STATE.errors.history ? `History unavailable: ${STATE.errors.history}` : `${rawObserved.length} plotted readings in selected routes. Passenger counts are averages per bus; missing values remain unknown. All times are SGT.`);
   canvas._chartMeta = { padding, chartW, chartH, seriesMap, buckets, isSmoothed };
+}
+
+function positionChartTooltip(tooltip, canvas, clientX, clientY) {
+  if (!tooltip || !canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const wrapper = canvas.parentElement || canvas;
+  const wrapperW = wrapper.clientWidth || canvas.offsetWidth || rect.width || 500;
+  const wrapperH = wrapper.clientHeight || canvas.offsetHeight || rect.height || 240;
+
+  const tipW = tooltip.offsetWidth || 180;
+  const tipH = tooltip.offsetHeight || 60;
+
+  const pointerX = (canvas.offsetLeft || 0) + (clientX - rect.left);
+
+  // If tooltip fits comfortably to the right of pointer, place it right; otherwise flip to the left
+  let posX;
+  if (pointerX + 14 + tipW <= wrapperW - 8) {
+    posX = pointerX + 14;
+  } else {
+    posX = pointerX - tipW - 14;
+  }
+  // Clamp inside container with 8px margin
+  posX = Math.max(8, Math.min(posX, wrapperW - tipW - 8));
+  tooltip.style.left = `${Math.round(posX)}px`;
+
+  if (typeof clientY === 'number') {
+    const pointerY = (canvas.offsetTop || 0) + (clientY - rect.top);
+    let posY = pointerY - tipH - 12;
+    if (posY < 8) posY = pointerY + 16;
+    posY = Math.max(8, Math.min(posY, wrapperH - tipH - 8));
+    tooltip.style.top = `${Math.round(posY)}px`;
+  } else {
+    tooltip.style.top = `${Math.round(Math.max(8, Math.min(20, wrapperH - tipH - 8)))}px`;
+  }
 }
 
 function setupChartInteractivity() {
@@ -423,8 +471,8 @@ function setupChartInteractivity() {
     const meta = canvas._chartMeta;
     if (!meta) return;
     const rect = canvas.getBoundingClientRect(), x = clientX - rect.left;
-    if (x < meta.padding.left || x > meta.padding.left + meta.chartW) { tooltip.style.display = 'none'; STATE.hoveredIndex = null; renderTimelineChart(); return; }
-    const index = Math.max(0, Math.min(143, Math.round((x - meta.padding.left) / meta.chartW * 143)));
+    const maxIdx = (meta.buckets?.length || BUCKETS_COUNT) - 1;
+    const index = Math.max(0, Math.min(maxIdx, Math.round((x - meta.padding.left) / meta.chartW * maxIdx)));
     STATE.hoveredIndex = index;
     const rows = [...meta.seriesMap.values()].filter(series => series.values[index] !== null || series.occupancies[index] !== null);
     tooltip.innerHTML = `<strong>${escapeHtml(meta.buckets[index].label)} SGT</strong>${rows.length ? rows.map(series => {
@@ -433,8 +481,7 @@ function setupChartInteractivity() {
       return `<div class="tooltip-row"><span style="color:${series.color}">${escapeHtml(series.code === 'CAMPUS_AVG' ? 'Observed Average' : series.code)}</span><span>${numberLabel(series.values[index])} pax · ${percentLabel(series.occupancies[index])}${rawText}</span></div>`;
     }).join('') : '<p>No reported readings in this interval</p>'}`;
     tooltip.style.display = 'block';
-    tooltip.style.left = `${Math.max(0, Math.min(x + 12, rect.width - tooltip.offsetWidth))}px`;
-    tooltip.style.top = `${Math.min(clientY - rect.top + 12, Math.max(0, rect.height - tooltip.offsetHeight))}px`;
+    positionChartTooltip(tooltip, canvas, clientX, clientY);
     renderTimelineChart();
   };
   canvas.addEventListener('mousemove', event => handlePointer(event.clientX, event.clientY));
@@ -540,7 +587,8 @@ function renderFleetGrid() {
   $('fleetGrid').innerHTML = buses.map(bus => {
     const status = fleetStatus(bus), active = status === 'active', level = busCrowd(bus);
     const label = status === 'stale' || stale ? 'Stale · Last known reading' : active ? 'Reported in latest pull' : 'Not in latest pull';
-    return `<article class="bus-card ${!active || stale ? 'bus-card-inactive' : ''}" data-plate="${escapeHtml(bus.vehplate)}" tabindex="0" role="button" aria-label="Open vehicle dashboard for ${escapeHtml(bus.vehplate)}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${active && !stale ? 'badge-info' : 'badge-secondary'}">${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span></div>${busReadingsMarkup(bus)}${!active ? '<p class="form-hint">Retained observation; current service status unknown.</p>' : ''}<span class="bus-card-click-hint">Click to view bus dashboard →</span></article>`;
+    const reasonHtml = !active || stale ? inactiveReasonMarkup(bus) : '';
+    return `<article class="bus-card ${!active || stale ? 'bus-card-inactive' : ''}" data-plate="${escapeHtml(bus.vehplate)}" tabindex="0" role="button" aria-label="Open vehicle dashboard for ${escapeHtml(bus.vehplate)}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${active && !stale ? 'badge-info' : 'badge-secondary'}">${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span></div>${busReadingsMarkup(bus)}${reasonHtml}<span class="bus-card-click-hint">Click to view bus dashboard →</span></article>`;
   }).join('');
 }
 
@@ -727,6 +775,140 @@ const NUS_BUS_STOPS = [
     "lng": 103.772703
   }
 ];
+
+const NUS_TERMINAL_CODES = new Set(['UTOWN', 'KRB', 'PGP', 'PGPR', 'COM3', 'KV']);
+
+function nearestTerminal(lat, lng) {
+  if (typeof lat !== 'number' || typeof lng !== 'number' || !Array.isArray(NUS_BUS_STOPS)) return null;
+  let closest = null;
+  let minDist = Infinity;
+  for (const stop of NUS_BUS_STOPS) {
+    if (!NUS_TERMINAL_CODES.has(stop.code)) continue;
+    const dLat = (lat - stop.lat) * 111000;
+    const dLng = (lng - stop.lng) * 110970;
+    const dist = Math.hypot(dLat, dLng);
+    if (dist < minDist) {
+      minDist = dist;
+      closest = { name: stop.name, dist };
+    }
+  }
+  return closest && closest.dist <= 350 ? closest.name : null;
+}
+
+function inactiveReason(bus, nowMs = Date.now()) {
+  const seen = lastSeen(bus);
+  if (!seen) {
+    return {
+      type: 'unknown',
+      title: 'Status unknown',
+      icon: '❓',
+      badgeClass: 'reason-default',
+      detail: 'Retained observation; current service status unknown.'
+    };
+  }
+  const diffMs = Math.max(0, nowMs - seen);
+  const terminalName = nearestTerminal(bus.lat, bus.lng);
+  const speed = numeric(bus.speed);
+  const ridership = numeric(bus.ridership);
+  const occupancyVal = numeric(bus.occupancy);
+  const route = bus.route_code || '';
+
+  // Singapore local time in minutes of day (UTC+8)
+  const sgDate = new Date(seen + 8 * 3600 * 1000);
+  const sgHour = sgDate.getUTCHours();
+  const sgMin = sgDate.getUTCMinutes();
+  const timeInMinutes = sgHour * 60 + sgMin;
+
+  // 1. Overnight shutdown or past shift (>5 hours elapsed or observed 22:45 - 06:30 SGT)
+  if (diffMs > 5 * 3600 * 1000 || timeInMinutes >= 22 * 60 + 45 || timeInMinutes < 6 * 60 + 30) {
+    return {
+      type: 'overnight',
+      title: 'Overnight shutdown / past shift',
+      icon: '🌙',
+      badgeClass: 'reason-overnight',
+      detail: diffMs > 12 * 3600 * 1000
+        ? 'Vehicle last operated on a previous service day; waiting for next operating schedule.'
+        : 'Service concluded for the night; scheduled to resume next operating day.'
+    };
+  }
+
+  // 2. Peak-only route window closed (R1, R2 operating windows)
+  if (['R1', 'R2'].includes(route) && diffMs >= 20 * 60 * 1000) {
+    return {
+      type: 'peak_route',
+      title: 'Peak-hour service window closed',
+      icon: '⏱️',
+      badgeClass: 'reason-peak-route',
+      detail: `Service ${route} operates during designated peak lecture transition windows only.`
+    };
+  }
+
+  // 3. Completed trip & parked at terminal (0 pax and stationary/low speed)
+  if (ridership === 0 && (speed === null || speed <= 5)) {
+    return {
+      type: 'parked',
+      title: 'Completed trip & parked',
+      icon: '🅿️',
+      badgeClass: 'reason-parked',
+      detail: terminalName
+        ? `Alighted all passengers and parked at ${terminalName}; engine or dispatch console idle.`
+        : 'Alighted all passengers at terminal; engine or dispatch console idle.'
+    };
+  }
+
+  // 4. Peak booster shift ended (last seen at tail of morning or evening peak with passenger load)
+  const isMorningPeakTail = timeInMinutes >= 9 * 60 + 35 && timeInMinutes <= 10 * 60 + 20;
+  const isEveningPeakTail = timeInMinutes >= 19 * 60 + 15 && timeInMinutes <= 20 * 60 + 15;
+  if ((isMorningPeakTail || isEveningPeakTail) && diffMs >= 12 * 60 * 1000 && ((occupancyVal !== null && occupancyVal >= 0.4) || (ridership !== null && ridership >= 25))) {
+    return {
+      type: 'peak_booster',
+      title: 'Peak booster shift ended',
+      icon: '📉',
+      badgeClass: 'reason-peak-end',
+      detail: isMorningPeakTail
+        ? 'Morning lecture rush concluded; extra booster vehicle completed its loop and returned to standby.'
+        : 'Evening peak rush concluded; extra booster vehicle completed its loop and returned to standby.'
+    };
+  }
+
+  // 5. Short turnaround layover between trips (<= 25m elapsed and near terminal or stationary)
+  if (diffMs <= 25 * 60 * 1000 && (terminalName || (speed !== null && speed <= 15))) {
+    return {
+      type: 'turnaround',
+      title: 'Turnaround layover at terminal',
+      icon: '🔄',
+      badgeClass: 'reason-turnaround',
+      detail: terminalName
+        ? `Driver layover between scheduled trips at ${terminalName}; will rejoin live feed upon next departure.`
+        : 'Driver layover between scheduled trips; will rejoin live feed upon next departure.'
+    };
+  }
+
+  // 6. Transponder signal gap mid-route (recently active, moving at speed in transit)
+  if (diffMs <= 30 * 60 * 1000 && speed !== null && speed > 15) {
+    return {
+      type: 'signal_gap',
+      title: 'Transponder signal gap mid-route',
+      icon: '📡',
+      badgeClass: 'reason-signal',
+      detail: `Vehicle was moving in transit (${numberLabel(speed)} km/h); GPS telemetry transponder temporarily dropped.`
+    };
+  }
+
+  // 7. Standby / off-duty fallback
+  return {
+    type: 'standby',
+    title: 'Standby / off-service',
+    icon: '⏸️',
+    badgeClass: 'reason-default',
+    detail: 'Vehicle not transmitting in latest live poll; parked, on driver break, or off-duty.'
+  };
+}
+
+function inactiveReasonMarkup(bus) {
+  const reason = inactiveReason(bus);
+  return `<div class="bus-inactive-reason ${escapeHtml(reason.badgeClass)}"><div class="inactive-reason-header"><span class="inactive-reason-icon" aria-hidden="true">${reason.icon}</span><strong class="inactive-reason-title">${escapeHtml(reason.title)}</strong></div><p class="inactive-reason-desc">${escapeHtml(reason.detail)}</p></div>`;
+}
 
 // High-precision road-aligned route geometries derived from official uNivUS stop sequences
 const NUS_ROUTE_PATHS = {"A1":[[1.29391,103.77014],[1.29392,103.77015],[1.29395,103.77019],[1.29398,103.77025],[1.29401,103.77031],[1.29403,103.77035],[1.29417,103.77029],[1.29443,103.77022],[1.29469,103.77017],[1.29479,103.77017],[1.29492,103.7702],[1.29504,103.77029],[1.29511,103.7704],[1.29514,103.77041],[1.29518,103.77053],[1.29517,103.77056],[1.29518,103.7706],[1.29509,103.77058],[1.29506,103.77057],[1.29497,103.77056],[1.29496,103.77056],[1.29479,103.77055],[1.29459,103.77057],[1.29454,103.77059],[1.29445,103.77061],[1.29434,103.77065],[1.29423,103.77069],[1.29417,103.77071],[1.29411,103.77075],[1.2939,103.77091],[1.29379,103.77102],[1.2937,103.77115],[1.29362,103.77128],[1.29355,103.77143],[1.29354,103.77146],[1.2935,103.7716],[1.29348,103.77176],[1.29345,103.77196],[1.29343,103.77211],[1.29341,103.77218],[1.29337,103.77235],[1.29334,103.77247],[1.29329,103.77258],[1.29324,103.7727],[1.29318,103.7728],[1.29308,103.77298],[1.29295,103.77317],[1.29268,103.77348],[1.2926,103.77355],[1.29256,103.77359],[1.29241,103.77376],[1.29234,103.77392],[1.2923,103.77404],[1.29229,103.77407],[1.29222,103.77423],[1.29221,103.77425],[1.29216,103.77441],[1.29215,103.77444],[1.29232,103.77456],[1.29248,103.77467],[1.29281,103.77492],[1.29288,103.77497],[1.2931,103.7751],[1.2932,103.77513],[1.29324,103.77514],[1.29333,103.77517],[1.29342,103.77519],[1.29355,103.77523],[1.29363,103.77526],[1.29368,103.77533],[1.2937,103.77538],[1.29371,103.7755],[1.29372,103.77555],[1.29373,103.77582],[1.29374,103.77597],[1.29374,103.77602],[1.29372,103.77615],[1.29374,103.77645],[1.29377,103.77672],[1.29377,103.7768],[1.29377,103.77684],[1.29376,103.77687],[1.29356,103.77718],[1.29351,103.77725],[1.29314,103.7778],[1.29309,103.7779],[1.29305,103.77801],[1.29301,103.77813],[1.29298,103.77827],[1.29296,103.77862],[1.29294,103.77872],[1.29292,103.77885],[1.29289,103.77894],[1.29287,103.77897],[1.29284,103.77904],[1.29278,103.77914],[1.29265,103.77932],[1.29255,103.77945],[1.29236,103.77972],[1.29233,103.77976],[1.29228,103.77983],[1.29226,103.7799],[1.29219,103.78009],[1.29216,103.78015],[1.29216,103.78015],[1.29212,103.7802],[1.29207,103.78024],[1.29201,103.78028],[1.29195,103.78031],[1.29188,103.78034],[1.29177,103.78036],[1.29175,103.78036],[1.29171,103.78037],[1.29164,103.78039],[1.2915,103.78044],[1.29142,103.78049],[1.2914,103.7805],[1.29129,103.78059],[1.29122,103.7807],[1.29118,103.78075],[1.29114,103.78085],[1.29112,103.78099],[1.29113,103.78111],[1.29116,103.78132],[1.29118,103.78145],[1.29127,103.7817],[1.29146,103.78211],[1.29164,103.78251],[1.29181,103.78287],[1.29196,103.78318],[1.29182,103.78328],[1.29164,103.78348],[1.2916,103.78353],[1.29167,103.78361],[1.29189,103.78385],[1.29212,103.78409],[1.29216,103.78413],[1.29221,103.78418],[1.29225,103.78423],[1.29226,103.78423],[1.29244,103.78443],[1.29279,103.78478],[1.29289,103.78487],[1.29302,103.78499],[1.29316,103.78504],[1.29323,103.78505],[1.29327,103.78506],[1.29332,103.78506],[1.29339,103.78505],[1.29349,103.78502],[1.29368,103.78494],[1.29371,103.78494],[1.29385,103.78492],[1.29407,103.7849],[1.2941,103.7849],[1.29415,103.78489],[1.29419,103.78488],[1.29423,103.78486],[1.29427,103.78484],[1.29449,103.7847],[1.29466,103.78458],[1.29473,103.78453],[1.29503,103.78433],[1.29519,103.78423],[1.29526,103.78419],[1.2953,103.78412],[1.29531,103.78408],[1.29532,103.78404],[1.29533,103.78397],[1.29532,103.78388],[1.29532,103.7838],[1.29525,103.78381],[1.29523,103.78381],[1.29524,103.78386],[1.29522,103.7839],[1.29514,103.78397],[1.29509,103.78405],[1.29504,103.78411],[1.29494,103.78419],[1.29483,103.78427],[1.29474,103.78432],[1.29449,103.78445],[1.29445,103.78447],[1.29442,103.78445],[1.29439,103.78444],[1.29437,103.78437],[1.29437,103.78433],[1.2944,103.78429],[1.29453,103.78423],[1.29466,103.78417],[1.29471,103.78414],[1.29479,103.7841],[1.29486,103.78407],[1.29494,103.784],[1.29497,103.78398],[1.29506,103.78387],[1.29509,103.78385],[1.2951,103.78384],[1.29512,103.78384],[1.2952,103.78382],[1.29523,103.78381],[1.29525,103.78381],[1.29532,103.7838],[1.29532,103.78373],[1.29532,103.7837],[1.29532,103.78366],[1.29532,103.78362],[1.29539,103.78362],[1.2954,103.7837],[1.2954,103.78373],[1.29541,103.78379],[1.29542,103.78384],[1.29544,103.78395],[1.29548,103.784],[1.29553,103.78401],[1.29596,103.78377],[1.29604,103.78371],[1.29607,103.78368],[1.29615,103.78363],[1.29623,103.78357],[1.29636,103.78345],[1.29645,103.78336],[1.2965,103.78331],[1.29664,103.78312],[1.29675,103.78294],[1.29677,103.7829],[1.29679,103.78289],[1.2969,103.78271],[1.29691,103.78267],[1.29692,103.78262],[1.29693,103.78252],[1.29693,103.78243],[1.29694,103.78237],[1.29696,103.78221],[1.29702,103.78208],[1.29717,103.78186],[1.2973,103.78168],[1.29734,103.78159],[1.29738,103.78152],[1.29738,103.78151],[1.29742,103.7814],[1.29744,103.78125],[1.29744,103.78121],[1.29744,103.78109],[1.29744,103.781],[1.29744,103.78094],[1.29743,103.78087],[1.29743,103.7808],[1.29742,103.78076],[1.29742,103.78072],[1.29741,103.78065],[1.29741,103.78057],[1.29741,103.78049],[1.29742,103.78044],[1.29743,103.78039],[1.29741,103.7803],[1.29737,103.78014],[1.29732,103.77999],[1.29726,103.77987],[1.29725,103.77984],[1.2972,103.7797],[1.29716,103.77958],[1.29713,103.77945],[1.29713,103.77938],[1.29713,103.77924],[1.29713,103.77909],[1.29718,103.77892],[1.29721,103.77885],[1.29727,103.77864],[1.29733,103.7785],[1.29736,103.77841],[1.29741,103.77827],[1.29753,103.77793],[1.29763,103.77768],[1.29768,103.7776],[1.29771,103.77754],[1.29776,103.77748],[1.29787,103.77733],[1.29797,103.7772],[1.29809,103.77706],[1.29828,103.77687],[1.29848,103.77673],[1.29866,103.77658],[1.29872,103.77649],[1.29879,103.77637],[1.29885,103.7762],[1.29888,103.77611],[1.29888,103.77602],[1.29888,103.77596],[1.29888,103.77593],[1.29885,103.77576],[1.29884,103.77561],[1.29884,103.77559],[1.29886,103.77542],[1.29886,103.7754],[1.2989,103.77525],[1.29907,103.77497],[1.29916,103.77487],[1.2992,103.77482],[1.29921,103.77474],[1.29924,103.77467],[1.29926,103.77462],[1.29923,103.77454],[1.2992,103.77451],[1.29915,103.77443],[1.29907,103.77439],[1.29893,103.7743],[1.29889,103.77428],[1.2988,103.77423],[1.29869,103.77415],[1.29848,103.77398],[1.29835,103.77385],[1.29824,103.7737],[1.29816,103.77357],[1.29796,103.77326],[1.29791,103.77321],[1.29786,103.77316],[1.29776,103.7731],[1.29769,103.77306],[1.29755,103.77301],[1.29733,103.77293],[1.29712,103.77285],[1.29706,103.77281],[1.29694,103.77276],[1.29685,103.7727],[1.29674,103.77263],[1.2967,103.7726],[1.29664,103.77255],[1.29662,103.77252],[1.29661,103.77251],[1.29653,103.77243],[1.29651,103.77241],[1.29645,103.77235],[1.29643,103.77232],[1.29641,103.7723],[1.29635,103.7722],[1.29629,103.772],[1.29625,103.77183],[1.29624,103.77171],[1.29624,103.77158],[1.29625,103.77143],[1.29627,103.77106],[1.29627,103.77101],[1.29627,103.77091],[1.2962,103.7709],[1.29615,103.7709],[1.29605,103.77089],[1.29588,103.77087],[1.29569,103.7708],[1.29551,103.77073],[1.29535,103.77065],[1.29518,103.7706],[1.29517,103.77056],[1.29515,103.77054],[1.29511,103.77043],[1.29511,103.7704],[1.29502,103.77038],[1.29488,103.77036],[1.29472,103.77037],[1.29459,103.77038],[1.29441,103.77042],[1.29426,103.77046],[1.29414,103.77052],[1.29395,103.77062],[1.2938,103.77075],[1.29365,103.7709],[1.29354,103.77103],[1.29348,103.77111],[1.29344,103.77113],[1.2934,103.77112],[1.29336,103.77109],[1.29333,103.77105],[1.2934,103.77096],[1.29349,103.77085],[1.29359,103.77075],[1.2937,103.77063],[1.29386,103.77046],[1.29391,103.77042],[1.29403,103.77035],[1.29417,103.77029],[1.29443,103.77022],[1.29457,103.77019]],"A2":[[1.29402,103.76931],[1.29397,103.76928],[1.29391,103.76925],[1.29384,103.76919],[1.29365,103.76907],[1.29363,103.76904],[1.29353,103.76896],[1.29344,103.76889],[1.29333,103.7688],[1.29324,103.76873],[1.2932,103.7687],[1.293,103.76854],[1.29274,103.76835],[1.29249,103.76816],[1.29245,103.76813],[1.29233,103.76804],[1.29244,103.76791],[1.29255,103.768],[1.2926,103.76803],[1.29281,103.7682],[1.29324,103.76853],[1.29337,103.76864],[1.29355,103.76877],[1.2937,103.76889],[1.29375,103.76892],[1.2939,103.76903],[1.29393,103.76906],[1.29402,103.76912],[1.29411,103.76917],[1.29438,103.76932],[1.29464,103.76942],[1.29488,103.76949],[1.29495,103.7695],[1.29513,103.76953],[1.29525,103.76954],[1.29545,103.76955],[1.29576,103.76955],[1.29598,103.76957],[1.29605,103.76957],[1.29615,103.76957],[1.29614,103.76974],[1.29614,103.76977],[1.29614,103.7698],[1.29619,103.76995],[1.29624,103.77015],[1.29635,103.77053],[1.29639,103.77074],[1.2964,103.77094],[1.2964,103.77101],[1.29639,103.77107],[1.29636,103.77161],[1.29637,103.77178],[1.2964,103.77195],[1.29644,103.77205],[1.29649,103.77214],[1.29656,103.77222],[1.29658,103.77225],[1.29662,103.77228],[1.29667,103.77232],[1.29672,103.77235],[1.29683,103.77243],[1.29698,103.77239],[1.29702,103.77239],[1.29709,103.77238],[1.29714,103.77238],[1.29717,103.7724],[1.2972,103.77241],[1.29723,103.77242],[1.29727,103.77244],[1.29717,103.77267],[1.29727,103.77244],[1.29723,103.77242],[1.2972,103.77241],[1.29717,103.7724],[1.29714,103.77238],[1.29709,103.77238],[1.29702,103.77239],[1.29701,103.77242],[1.2969,103.7725],[1.29697,103.77257],[1.2971,103.77267],[1.29726,103.77279],[1.29743,103.7729],[1.29759,103.77296],[1.29771,103.773],[1.29779,103.77303],[1.29789,103.7731],[1.298,103.7732],[1.29819,103.77346],[1.29833,103.77368],[1.29845,103.77384],[1.2986,103.77398],[1.2987,103.77405],[1.29882,103.77414],[1.29887,103.77417],[1.29918,103.77435],[1.29928,103.77439],[1.29935,103.77442],[1.29947,103.77444],[1.29957,103.77448],[1.29961,103.77451],[1.29971,103.77452],[1.2998,103.77452],[1.29991,103.77452],[1.29997,103.77451],[1.30007,103.77449],[1.30018,103.77445],[1.30034,103.77437],[1.30046,103.77431],[1.3005,103.77425],[1.30056,103.77416],[1.30058,103.77413],[1.3006,103.77412],[1.30064,103.77403],[1.30067,103.77398],[1.30076,103.77382],[1.30083,103.7737],[1.3009,103.77358],[1.30096,103.77343],[1.30098,103.77338],[1.30102,103.77323],[1.30103,103.77314],[1.30111,103.77314],[1.30119,103.77314],[1.30119,103.77319],[1.30116,103.7733],[1.30113,103.77342],[1.30104,103.77367],[1.30103,103.77368],[1.301,103.77377],[1.30095,103.77385],[1.30083,103.77404],[1.3008,103.77409],[1.30078,103.77414],[1.30075,103.77418],[1.30076,103.7742],[1.30076,103.77422],[1.30075,103.77424],[1.30074,103.77427],[1.30072,103.77429],[1.3007,103.77431],[1.30066,103.77432],[1.30065,103.77432],[1.3006,103.77434],[1.30055,103.77437],[1.30046,103.77443],[1.30035,103.7745],[1.30022,103.77456],[1.30008,103.77462],[1.29996,103.77464],[1.29986,103.77465],[1.29968,103.77465],[1.29963,103.77466],[1.29957,103.77467],[1.29953,103.77468],[1.29949,103.77469],[1.29941,103.7747],[1.29928,103.77479],[1.29923,103.77481],[1.2992,103.77482],[1.29916,103.77487],[1.29907,103.77497],[1.2989,103.77525],[1.29886,103.7754],[1.29886,103.77542],[1.29884,103.77559],[1.29885,103.77576],[1.29888,103.77593],[1.29888,103.77596],[1.29888,103.77602],[1.29888,103.7761],[1.29888,103.77611],[1.29885,103.7762],[1.29879,103.77637],[1.29872,103.77649],[1.29866,103.77658],[1.29848,103.77673],[1.29828,103.77687],[1.29809,103.77706],[1.29797,103.7772],[1.29787,103.77733],[1.29776,103.77748],[1.29771,103.77754],[1.29768,103.7776],[1.29763,103.77768],[1.29753,103.77793],[1.29747,103.77811],[1.29741,103.77827],[1.29736,103.77841],[1.29733,103.7785],[1.29727,103.77864],[1.29718,103.77892],[1.29713,103.77909],[1.29713,103.77924],[1.29713,103.77938],[1.29713,103.77945],[1.29716,103.77958],[1.2972,103.7797],[1.29725,103.77984],[1.29726,103.77987],[1.29732,103.77999],[1.29737,103.78014],[1.29741,103.7803],[1.29743,103.78039],[1.29744,103.78043],[1.29746,103.78051],[1.29749,103.78068],[1.29749,103.78073],[1.29751,103.78101],[1.2975,103.78121],[1.29749,103.78132],[1.29747,103.78142],[1.29744,103.78155],[1.29739,103.78164],[1.29731,103.78176],[1.29724,103.78185],[1.29716,103.78197],[1.2971,103.78207],[1.29704,103.78223],[1.29703,103.78226],[1.29702,103.78237],[1.29701,103.78239],[1.297,103.78244],[1.29699,103.78251],[1.29699,103.78253],[1.29699,103.78261],[1.29698,103.78271],[1.29697,103.78275],[1.29696,103.78286],[1.29692,103.78293],[1.29693,103.78297],[1.29692,103.783],[1.2969,103.78303],[1.29688,103.78305],[1.29686,103.78305],[1.29683,103.78306],[1.29667,103.78323],[1.29657,103.78336],[1.29647,103.78347],[1.29636,103.78357],[1.29632,103.78362],[1.29627,103.78366],[1.29619,103.78373],[1.29607,103.78381],[1.29587,103.78392],[1.29571,103.78405],[1.2956,103.78414],[1.29559,103.78418],[1.29557,103.78421],[1.29553,103.78423],[1.29549,103.78424],[1.29545,103.78424],[1.29536,103.78428],[1.29495,103.78455],[1.29491,103.78458],[1.29457,103.78484],[1.29453,103.78486],[1.29439,103.78493],[1.2942,103.785],[1.29409,103.78501],[1.29399,103.78502],[1.29389,103.78502],[1.29377,103.78503],[1.29367,103.78504],[1.29358,103.78507],[1.29356,103.78508],[1.29354,103.78509],[1.29349,103.78513],[1.29339,103.78522],[1.29334,103.78527],[1.29324,103.78537],[1.29318,103.78531],[1.29313,103.78526],[1.29286,103.785],[1.29237,103.7845],[1.29229,103.78443],[1.29213,103.78425],[1.29209,103.7842],[1.29205,103.78415],[1.29188,103.78398],[1.2916,103.78367],[1.29153,103.7836],[1.2916,103.78353],[1.29164,103.78348],[1.29182,103.78328],[1.29196,103.78318],[1.29181,103.78287],[1.29164,103.78251],[1.29146,103.78211],[1.29127,103.7817],[1.29118,103.78145],[1.29116,103.78145],[1.29114,103.78145],[1.2911,103.78143],[1.29108,103.78139],[1.29105,103.78133],[1.29104,103.7813],[1.29102,103.78124],[1.291,103.78121],[1.291,103.78109],[1.291,103.78107],[1.29101,103.78105],[1.2911,103.7807],[1.29114,103.78073],[1.29118,103.78075],[1.29122,103.7807],[1.29129,103.78059],[1.2914,103.7805],[1.29142,103.78049],[1.2915,103.78044],[1.29164,103.78039],[1.29171,103.78037],[1.29177,103.78036],[1.29188,103.78034],[1.29195,103.78031],[1.29201,103.78028],[1.29207,103.78024],[1.29212,103.7802],[1.29216,103.78015],[1.29216,103.78015],[1.29219,103.78009],[1.29226,103.7799],[1.29228,103.77983],[1.29233,103.77976],[1.29236,103.77972],[1.29255,103.77945],[1.29265,103.77932],[1.29278,103.77914],[1.29284,103.77904],[1.29287,103.77897],[1.29289,103.77894],[1.29292,103.77885],[1.29294,103.77872],[1.29296,103.77862],[1.29298,103.77827],[1.29301,103.77813],[1.29305,103.77801],[1.29309,103.7779],[1.29314,103.7778],[1.29351,103.77725],[1.29356,103.77718],[1.29371,103.77694],[1.29376,103.77687],[1.29377,103.77684],[1.29377,103.7768],[1.29374,103.77645],[1.29372,103.77615],[1.29374,103.77602],[1.29374,103.77597],[1.29373,103.77582],[1.29372,103.77555],[1.29371,103.7755],[1.2937,103.77538],[1.29368,103.77533],[1.29363,103.77526],[1.29355,103.77523],[1.29342,103.77519],[1.29333,103.77517],[1.29324,103.77514],[1.2931,103.7751],[1.29288,103.77497],[1.29283,103.77494],[1.29281,103.77492],[1.29248,103.77467],[1.29232,103.77456],[1.29215,103.77444],[1.29216,103.77441],[1.29221,103.77425],[1.29219,103.77411],[1.29217,103.77406],[1.29214,103.77402],[1.292,103.77391],[1.29215,103.77386],[1.29229,103.77381],[1.29241,103.77376],[1.29256,103.77359],[1.2926,103.77355],[1.29268,103.77348],[1.29295,103.77317],[1.29308,103.77298],[1.29318,103.7728],[1.29324,103.7727],[1.29326,103.77264],[1.29329,103.77258],[1.29334,103.77247],[1.29337,103.77235],[1.29341,103.77218],[1.29343,103.77211],[1.29345,103.77196],[1.29348,103.77176],[1.2935,103.7716],[1.29355,103.77143],[1.29362,103.77128],[1.2937,103.77115],[1.29379,103.77102],[1.2939,103.77091],[1.29411,103.77075],[1.29417,103.77071],[1.29423,103.77069],[1.29434,103.77065],[1.29445,103.77061],[1.29459,103.77057],[1.29479,103.77055],[1.29496,103.77056],[1.29497,103.77056],[1.29506,103.77057],[1.29509,103.77058],[1.29518,103.7706],[1.29533,103.77065],[1.29518,103.7706],[1.29517,103.77056],[1.29515,103.77054],[1.29511,103.77043],[1.29511,103.7704],[1.29502,103.77038],[1.29488,103.77036],[1.29472,103.77037],[1.29459,103.77038],[1.29441,103.77042],[1.29426,103.77046],[1.29414,103.77052],[1.29395,103.77062],[1.2938,103.77075],[1.29365,103.7709],[1.29354,103.77103],[1.29348,103.77111],[1.29344,103.77113],[1.2934,103.77112],[1.29336,103.77109],[1.29333,103.77105],[1.2934,103.77096],[1.29349,103.77085],[1.29359,103.77075],[1.2937,103.77063],[1.29386,103.77046],[1.29391,103.77042],[1.29403,103.77035],[1.29417,103.77029],[1.29443,103.77022],[1.29447,103.77021]],"D1":[[1.29443,103.77522],[1.29387,103.77546],[1.29384,103.77547],[1.29371,103.7755],[1.2937,103.77538],[1.29368,103.77533],[1.29363,103.77526],[1.29355,103.77523],[1.29342,103.77519],[1.29333,103.77517],[1.29324,103.77514],[1.2931,103.7751],[1.29288,103.77497],[1.29283,103.77494],[1.29281,103.77492],[1.29248,103.77467],[1.29232,103.77456],[1.29215,103.77444],[1.29216,103.77441],[1.29221,103.77425],[1.29219,103.77411],[1.29217,103.77406],[1.29214,103.77402],[1.292,103.77391],[1.29215,103.77386],[1.29229,103.77381],[1.29241,103.77376],[1.29256,103.77359],[1.2926,103.77355],[1.29268,103.77348],[1.29295,103.77317],[1.29308,103.77298],[1.29318,103.7728],[1.29324,103.7727],[1.29326,103.77264],[1.29329,103.77258],[1.29334,103.77247],[1.29337,103.77235],[1.29341,103.77218],[1.29343,103.77211],[1.29345,103.77196],[1.29348,103.77176],[1.2935,103.7716],[1.29355,103.77143],[1.29362,103.77128],[1.2937,103.77115],[1.29379,103.77102],[1.2939,103.77091],[1.29411,103.77075],[1.29417,103.77071],[1.29423,103.77069],[1.29434,103.77065],[1.29445,103.77061],[1.29459,103.77057],[1.29479,103.77055],[1.29496,103.77056],[1.29497,103.77056],[1.29506,103.77057],[1.29509,103.77058],[1.29518,103.7706],[1.29533,103.77065],[1.29535,103.77065],[1.29551,103.77073],[1.29569,103.7708],[1.29588,103.77087],[1.29605,103.77089],[1.29615,103.7709],[1.2962,103.7709],[1.29627,103.77091],[1.2964,103.77094],[1.2964,103.77101],[1.29639,103.77107],[1.29636,103.77161],[1.29637,103.77178],[1.2964,103.77195],[1.29644,103.77205],[1.29649,103.77214],[1.29656,103.77222],[1.29658,103.77225],[1.29662,103.77228],[1.29667,103.77232],[1.29672,103.77235],[1.29683,103.77243],[1.29698,103.77239],[1.29702,103.77239],[1.29709,103.77238],[1.29714,103.77238],[1.29717,103.7724],[1.2972,103.77241],[1.29723,103.77242],[1.29727,103.77244],[1.29717,103.77267],[1.29727,103.77244],[1.29723,103.77242],[1.2972,103.77241],[1.29717,103.7724],[1.29714,103.77238],[1.29709,103.77238],[1.29702,103.77239],[1.29701,103.77242],[1.2969,103.7725],[1.29697,103.77257],[1.2971,103.77267],[1.29726,103.77279],[1.29743,103.7729],[1.29759,103.77296],[1.29771,103.773],[1.29779,103.77303],[1.29789,103.7731],[1.298,103.7732],[1.29819,103.77346],[1.29833,103.77368],[1.29845,103.77384],[1.2986,103.77398],[1.2987,103.77405],[1.29882,103.77414],[1.29887,103.77417],[1.29918,103.77435],[1.29928,103.77439],[1.29935,103.77442],[1.29947,103.77444],[1.29957,103.77448],[1.29961,103.77451],[1.29971,103.77452],[1.2998,103.77452],[1.29991,103.77452],[1.29997,103.77451],[1.30007,103.77449],[1.30018,103.77445],[1.30034,103.77437],[1.30046,103.77431],[1.3005,103.77425],[1.30056,103.77416],[1.30058,103.77413],[1.3006,103.77412],[1.30064,103.77403],[1.30067,103.77398],[1.30076,103.77382],[1.30083,103.7737],[1.3009,103.77358],[1.30096,103.77343],[1.30098,103.77338],[1.30102,103.77323],[1.30103,103.77314],[1.30111,103.77314],[1.30119,103.77314],[1.30119,103.77319],[1.30116,103.7733],[1.30113,103.77342],[1.30104,103.77367],[1.30103,103.77368],[1.301,103.77377],[1.30095,103.77385],[1.30083,103.77404],[1.3008,103.77409],[1.30078,103.77414],[1.30075,103.77418],[1.30076,103.7742],[1.30077,103.77421],[1.30079,103.77424],[1.30086,103.77432],[1.30089,103.77437],[1.3009,103.77439],[1.30097,103.77443],[1.30111,103.77447],[1.30132,103.77448],[1.30145,103.77446],[1.30164,103.77439],[1.30172,103.77434],[1.30232,103.77406],[1.30257,103.77398],[1.30277,103.77395],[1.30289,103.77396],[1.30303,103.77399],[1.30316,103.77405],[1.30323,103.7741],[1.30329,103.77416],[1.30336,103.77423],[1.3035,103.77442],[1.30358,103.77454],[1.30364,103.77466],[1.30365,103.77468],[1.30368,103.77479],[1.30369,103.77503],[1.30364,103.77527],[1.30366,103.77543],[1.30368,103.77548],[1.30369,103.77553],[1.30372,103.77552],[1.30375,103.77551],[1.30378,103.77552],[1.30381,103.77553],[1.30383,103.77555],[1.30384,103.77558],[1.30385,103.77561],[1.30384,103.77564],[1.30383,103.77566],[1.30382,103.77568],[1.30379,103.7757],[1.30377,103.77571],[1.30375,103.77571],[1.30372,103.7757],[1.3037,103.77569],[1.30368,103.77567],[1.30366,103.77565],[1.30365,103.77562],[1.30366,103.77559],[1.30367,103.77556],[1.30369,103.77553],[1.30368,103.77548],[1.30366,103.77543],[1.30364,103.77527],[1.30363,103.77515],[1.30357,103.77503],[1.30355,103.77499],[1.30354,103.77495],[1.30352,103.77486],[1.3035,103.77477],[1.30349,103.77468],[1.30346,103.77457],[1.30342,103.77441],[1.30338,103.77432],[1.30336,103.77423],[1.30329,103.77416],[1.30323,103.7741],[1.30316,103.77405],[1.30303,103.77399],[1.30289,103.77396],[1.30277,103.77395],[1.30257,103.77398],[1.30232,103.77406],[1.30172,103.77434],[1.30164,103.77439],[1.30145,103.77446],[1.30132,103.77448],[1.30111,103.77447],[1.30097,103.77443],[1.3009,103.77439],[1.30089,103.77437],[1.30084,103.77437],[1.30075,103.77433],[1.3007,103.77431],[1.30066,103.77432],[1.30065,103.77432],[1.3006,103.77434],[1.30055,103.77437],[1.30046,103.77443],[1.30035,103.7745],[1.30022,103.77456],[1.30008,103.77462],[1.29996,103.77464],[1.29986,103.77465],[1.29968,103.77465],[1.29963,103.77466],[1.29957,103.77467],[1.29953,103.77468],[1.29949,103.77469],[1.29941,103.7747],[1.29935,103.7747],[1.2993,103.77467],[1.29926,103.77462],[1.29923,103.77454],[1.2992,103.77451],[1.29915,103.77443],[1.29907,103.77439],[1.29893,103.7743],[1.29889,103.77428],[1.2988,103.77423],[1.29869,103.77415],[1.29848,103.77398],[1.29835,103.77385],[1.29824,103.7737],[1.29816,103.77357],[1.29796,103.77326],[1.29791,103.77321],[1.29786,103.77316],[1.29776,103.7731],[1.29769,103.77306],[1.29755,103.77301],[1.29733,103.77293],[1.29712,103.77285],[1.29706,103.77281],[1.29694,103.77276],[1.29685,103.7727],[1.29674,103.77263],[1.2967,103.7726],[1.29664,103.77255],[1.29662,103.77252],[1.29659,103.77249],[1.29653,103.77243],[1.29651,103.77241],[1.29645,103.77235],[1.29643,103.77232],[1.29641,103.7723],[1.29635,103.7722],[1.29629,103.772],[1.29625,103.77183],[1.29624,103.77171],[1.29624,103.77158],[1.29625,103.77143],[1.29627,103.77106],[1.29627,103.77101],[1.29627,103.77091],[1.2962,103.7709],[1.29615,103.7709],[1.29605,103.77089],[1.29588,103.77087],[1.29569,103.7708],[1.29551,103.77073],[1.29535,103.77065],[1.29518,103.7706],[1.29509,103.77058],[1.29506,103.77057],[1.29497,103.77056],[1.29496,103.77056],[1.29479,103.77055],[1.29459,103.77057],[1.29454,103.77059],[1.29445,103.77061],[1.29434,103.77065],[1.29423,103.77069],[1.29417,103.77071],[1.29411,103.77075],[1.2939,103.77091],[1.29379,103.77102],[1.2937,103.77115],[1.29362,103.77128],[1.29355,103.77143],[1.29354,103.77146],[1.2935,103.7716],[1.29348,103.77176],[1.29345,103.77196],[1.29343,103.77211],[1.29341,103.77218],[1.29337,103.77235],[1.29334,103.77247],[1.29329,103.77258],[1.29324,103.7727],[1.29318,103.7728],[1.29308,103.77298],[1.29295,103.77317],[1.29268,103.77348],[1.2926,103.77355],[1.29256,103.77359],[1.29241,103.77376],[1.29234,103.77392],[1.2923,103.77404],[1.29229,103.77407],[1.29222,103.77423],[1.29221,103.77425],[1.29216,103.77441],[1.29215,103.77444],[1.29232,103.77456],[1.29248,103.77467],[1.29281,103.77492],[1.29288,103.77497],[1.2931,103.7751],[1.2932,103.77513],[1.29324,103.77514],[1.29333,103.77517],[1.29342,103.77519],[1.29355,103.77523],[1.29363,103.77526],[1.29368,103.77533],[1.2937,103.77538],[1.29371,103.7755],[1.29384,103.77547],[1.29387,103.77546],[1.29443,103.77522]],"D2":[[1.29443,103.77522],[1.29387,103.77546],[1.29384,103.77547],[1.29371,103.7755],[1.29372,103.77555],[1.29373,103.77582],[1.29374,103.77597],[1.29374,103.77602],[1.29372,103.77615],[1.29374,103.77645],[1.29377,103.77672],[1.29377,103.7768],[1.29377,103.77684],[1.29376,103.77687],[1.29356,103.77718],[1.29351,103.77725],[1.29314,103.7778],[1.29309,103.7779],[1.29305,103.77801],[1.29301,103.77813],[1.29298,103.77827],[1.29296,103.77862],[1.29294,103.77872],[1.29292,103.77885],[1.29289,103.77894],[1.29287,103.77897],[1.29284,103.77904],[1.29278,103.77914],[1.29265,103.77932],[1.29255,103.77945],[1.29236,103.77972],[1.29233,103.77976],[1.29228,103.77983],[1.29226,103.7799],[1.29219,103.78009],[1.29216,103.78015],[1.29216,103.78015],[1.29212,103.7802],[1.29207,103.78024],[1.29201,103.78028],[1.29195,103.78031],[1.29188,103.78034],[1.29177,103.78036],[1.29175,103.78036],[1.29171,103.78037],[1.29164,103.78039],[1.2915,103.78044],[1.29142,103.78049],[1.2914,103.7805],[1.29129,103.78059],[1.29122,103.7807],[1.29118,103.78075],[1.29114,103.78085],[1.29112,103.78099],[1.29113,103.78111],[1.29116,103.78132],[1.29118,103.78145],[1.29127,103.7817],[1.29146,103.78211],[1.29164,103.78251],[1.29181,103.78287],[1.29196,103.78318],[1.29182,103.78328],[1.29164,103.78348],[1.2916,103.78353],[1.29167,103.78361],[1.29189,103.78385],[1.29212,103.78409],[1.29216,103.78413],[1.29221,103.78418],[1.29225,103.78423],[1.29226,103.78423],[1.29244,103.78443],[1.29279,103.78478],[1.29289,103.78487],[1.29302,103.78499],[1.29316,103.78504],[1.29323,103.78505],[1.29327,103.78506],[1.29332,103.78506],[1.29339,103.78505],[1.29349,103.78502],[1.29368,103.78494],[1.29371,103.78494],[1.29385,103.78492],[1.29407,103.7849],[1.2941,103.7849],[1.29415,103.78489],[1.29419,103.78488],[1.29423,103.78486],[1.29427,103.78484],[1.29449,103.7847],[1.29466,103.78458],[1.29473,103.78453],[1.29484,103.78445],[1.29503,103.78433],[1.29519,103.78423],[1.29526,103.78419],[1.29536,103.78413],[1.29537,103.78409],[1.29539,103.78404],[1.29543,103.78401],[1.29548,103.784],[1.29553,103.78401],[1.29596,103.78377],[1.29604,103.78371],[1.29607,103.78368],[1.29615,103.78363],[1.29623,103.78357],[1.29636,103.78345],[1.29645,103.78336],[1.2965,103.78331],[1.29664,103.78312],[1.29675,103.78294],[1.29677,103.7829],[1.29679,103.78289],[1.2969,103.78271],[1.29691,103.78267],[1.29692,103.78262],[1.29693,103.78252],[1.29693,103.78243],[1.29694,103.78237],[1.29696,103.78221],[1.29702,103.78208],[1.29717,103.78186],[1.2973,103.78168],[1.29734,103.78159],[1.29738,103.78152],[1.29738,103.78151],[1.29742,103.7814],[1.29744,103.78125],[1.29744,103.78121],[1.29744,103.78109],[1.29744,103.781],[1.29744,103.78094],[1.29743,103.78087],[1.29743,103.7808],[1.29742,103.78076],[1.29742,103.78072],[1.29741,103.78065],[1.29741,103.78057],[1.29741,103.78049],[1.29742,103.78044],[1.29743,103.78039],[1.29741,103.7803],[1.29737,103.78014],[1.29732,103.77999],[1.29726,103.77987],[1.29725,103.77984],[1.2972,103.7797],[1.29716,103.77958],[1.29713,103.77945],[1.29713,103.77938],[1.29713,103.77924],[1.29713,103.77909],[1.29718,103.77892],[1.29721,103.77885],[1.29727,103.77864],[1.29733,103.7785],[1.29736,103.77841],[1.29741,103.77827],[1.29753,103.77793],[1.29763,103.77768],[1.29768,103.7776],[1.29771,103.77754],[1.29776,103.77748],[1.29787,103.77733],[1.29797,103.7772],[1.29809,103.77706],[1.29828,103.77687],[1.29848,103.77673],[1.29866,103.77658],[1.29872,103.77649],[1.29879,103.77637],[1.29885,103.7762],[1.29888,103.77611],[1.29888,103.77602],[1.29888,103.77596],[1.29888,103.77593],[1.29885,103.77576],[1.29884,103.77561],[1.29884,103.77559],[1.29886,103.77542],[1.29886,103.7754],[1.2989,103.77525],[1.29907,103.77497],[1.29916,103.77487],[1.2992,103.77482],[1.29921,103.77474],[1.29924,103.77467],[1.29926,103.77462],[1.29923,103.77454],[1.29925,103.77448],[1.2993,103.77444],[1.29935,103.77442],[1.29947,103.77444],[1.29957,103.77448],[1.29961,103.77451],[1.29971,103.77452],[1.2998,103.77452],[1.29991,103.77452],[1.29997,103.77451],[1.30007,103.77449],[1.30018,103.77445],[1.30034,103.77437],[1.30046,103.77431],[1.3005,103.77425],[1.30056,103.77416],[1.30058,103.77413],[1.3006,103.77412],[1.30064,103.77403],[1.30067,103.77398],[1.30076,103.77382],[1.30083,103.7737],[1.3009,103.77358],[1.30096,103.77343],[1.30098,103.77338],[1.30102,103.77323],[1.30103,103.77314],[1.30111,103.77314],[1.30119,103.77314],[1.30119,103.77319],[1.30116,103.7733],[1.30113,103.77342],[1.30104,103.77367],[1.30103,103.77368],[1.301,103.77377],[1.30095,103.77385],[1.30083,103.77404],[1.3008,103.77409],[1.30078,103.77414],[1.30075,103.77418],[1.30076,103.7742],[1.30077,103.77421],[1.30079,103.77424],[1.30086,103.77432],[1.30089,103.77437],[1.3009,103.77439],[1.30097,103.77443],[1.30111,103.77447],[1.30132,103.77448],[1.30145,103.77446],[1.30164,103.77439],[1.30172,103.77434],[1.30232,103.77406],[1.30257,103.77398],[1.30277,103.77395],[1.30289,103.77396],[1.30303,103.77399],[1.30316,103.77405],[1.30323,103.7741],[1.30329,103.77416],[1.30336,103.77423],[1.30343,103.77433],[1.3035,103.77442],[1.30358,103.77454],[1.30364,103.77466],[1.30368,103.77479],[1.30369,103.77503],[1.30364,103.77527],[1.30366,103.77543],[1.30368,103.77548],[1.30369,103.77553],[1.30372,103.77552],[1.30375,103.77551],[1.30378,103.77552],[1.30381,103.77553],[1.30383,103.77555],[1.30384,103.77558],[1.30385,103.77561],[1.30384,103.77564],[1.30383,103.77566],[1.30382,103.77568],[1.30379,103.7757],[1.30377,103.77571],[1.30375,103.77571],[1.30372,103.7757],[1.3037,103.77569],[1.30368,103.77567],[1.30366,103.77565],[1.30365,103.77562],[1.30366,103.77559],[1.30367,103.77556],[1.30369,103.77553],[1.30368,103.77548],[1.30366,103.77543],[1.30364,103.77527],[1.30363,103.77515],[1.30357,103.77503],[1.30355,103.77499],[1.30354,103.77495],[1.30352,103.77486],[1.3035,103.77477],[1.30349,103.77468],[1.30346,103.77457],[1.30342,103.77441],[1.30338,103.77432],[1.30336,103.77423],[1.30329,103.77416],[1.30323,103.7741],[1.30316,103.77405],[1.30303,103.77399],[1.30289,103.77396],[1.30277,103.77395],[1.30257,103.77398],[1.30232,103.77406],[1.30172,103.77434],[1.30164,103.77439],[1.30145,103.77446],[1.30132,103.77448],[1.30111,103.77447],[1.30097,103.77443],[1.3009,103.77439],[1.30089,103.77437],[1.30084,103.77437],[1.30075,103.77433],[1.3007,103.77431],[1.30066,103.77432],[1.30065,103.77432],[1.3006,103.77434],[1.30055,103.77437],[1.30046,103.77443],[1.30035,103.7745],[1.30022,103.77456],[1.30008,103.77462],[1.29996,103.77464],[1.29986,103.77465],[1.29968,103.77465],[1.29963,103.77466],[1.29957,103.77467],[1.29953,103.77468],[1.29949,103.77469],[1.29941,103.7747],[1.29928,103.77479],[1.29923,103.77481],[1.2992,103.77482],[1.29916,103.77487],[1.29907,103.77497],[1.2989,103.77525],[1.29886,103.7754],[1.29886,103.77542],[1.29884,103.77559],[1.29885,103.77576],[1.29888,103.77593],[1.29888,103.77596],[1.29888,103.77602],[1.29888,103.7761],[1.29888,103.77611],[1.29885,103.7762],[1.29879,103.77637],[1.29872,103.77649],[1.29866,103.77658],[1.29848,103.77673],[1.29828,103.77687],[1.29809,103.77706],[1.29797,103.7772],[1.29787,103.77733],[1.29776,103.77748],[1.29771,103.77754],[1.29768,103.7776],[1.29763,103.77768],[1.29753,103.77793],[1.29748,103.77805],[1.29741,103.77827],[1.29736,103.77841],[1.29733,103.7785],[1.29727,103.77864],[1.29718,103.77892],[1.29713,103.77909],[1.29713,103.77924],[1.29713,103.77938],[1.29713,103.77945],[1.29716,103.77958],[1.2972,103.7797],[1.29725,103.77984],[1.29726,103.77987],[1.29732,103.77999],[1.29737,103.78014],[1.29741,103.7803],[1.29743,103.78039],[1.29744,103.78043],[1.29746,103.78051],[1.29749,103.78068],[1.29749,103.78073],[1.29751,103.78101],[1.2975,103.78121],[1.29749,103.78132],[1.29747,103.78142],[1.29744,103.78155],[1.29739,103.78164],[1.29731,103.78176],[1.29724,103.78185],[1.29716,103.78197],[1.2971,103.78207],[1.29704,103.78223],[1.29703,103.78226],[1.29702,103.78237],[1.29701,103.78239],[1.297,103.78244],[1.29699,103.78251],[1.29699,103.78253],[1.29699,103.78261],[1.29698,103.78271],[1.29697,103.78275],[1.29696,103.78286],[1.29692,103.78293],[1.29693,103.78297],[1.29692,103.783],[1.2969,103.78303],[1.29688,103.78305],[1.29686,103.78305],[1.29683,103.78306],[1.29667,103.78323],[1.29657,103.78336],[1.29647,103.78347],[1.29636,103.78357],[1.29632,103.78362],[1.29627,103.78366],[1.29619,103.78373],[1.29607,103.78381],[1.29587,103.78392],[1.29571,103.78405],[1.2956,103.78414],[1.29559,103.78418],[1.29557,103.78421],[1.29553,103.78423],[1.29549,103.78424],[1.29545,103.78424],[1.29536,103.78428],[1.29496,103.78454],[1.29495,103.78455],[1.29457,103.78484],[1.29453,103.78486],[1.29439,103.78493],[1.2942,103.785],[1.29409,103.78501],[1.29399,103.78502],[1.29389,103.78502],[1.29377,103.78503],[1.29367,103.78504],[1.29358,103.78507],[1.29356,103.78508],[1.29354,103.78509],[1.29349,103.78513],[1.29339,103.78522],[1.29334,103.78527],[1.29324,103.78537],[1.29318,103.78531],[1.29313,103.78526],[1.29286,103.785],[1.29237,103.7845],[1.29229,103.78443],[1.29213,103.78425],[1.29209,103.7842],[1.29205,103.78415],[1.29188,103.78398],[1.2916,103.78367],[1.29153,103.7836],[1.2916,103.78353],[1.29164,103.78348],[1.29182,103.78328],[1.29196,103.78318],[1.29181,103.78287],[1.29164,103.78251],[1.29146,103.78211],[1.29127,103.7817],[1.29118,103.78145],[1.29116,103.78145],[1.29114,103.78145],[1.2911,103.78143],[1.29108,103.78139],[1.29105,103.78133],[1.29104,103.7813],[1.29102,103.78124],[1.291,103.78121],[1.291,103.78118],[1.291,103.78107],[1.29101,103.78105],[1.2911,103.7807],[1.29114,103.78073],[1.29118,103.78075],[1.29122,103.7807],[1.29129,103.78059],[1.2914,103.7805],[1.29142,103.78049],[1.2915,103.78044],[1.29164,103.78039],[1.29171,103.78037],[1.29177,103.78036],[1.29188,103.78034],[1.29195,103.78031],[1.29201,103.78028],[1.29207,103.78024],[1.29212,103.7802],[1.29216,103.78015],[1.29216,103.78015],[1.29219,103.78009],[1.29226,103.7799],[1.29228,103.77983],[1.29233,103.77976],[1.29236,103.77972],[1.29255,103.77945],[1.29265,103.77932],[1.29278,103.77914],[1.29284,103.77904],[1.29287,103.77897],[1.29289,103.77894],[1.29292,103.77885],[1.29294,103.77872],[1.29296,103.77862],[1.29298,103.77827],[1.29301,103.77813],[1.29305,103.77801],[1.29309,103.7779],[1.29314,103.7778],[1.29351,103.77725],[1.29356,103.77718],[1.29371,103.77694],[1.29376,103.77687],[1.29377,103.77684],[1.29377,103.7768],[1.29374,103.77645],[1.29372,103.77615],[1.29374,103.77602],[1.29374,103.77597],[1.29373,103.77582],[1.29372,103.77555],[1.29371,103.7755],[1.29384,103.77547],[1.29387,103.77546],[1.29443,103.77522]],"K":[[1.29175,103.78036],[1.29171,103.78037],[1.29164,103.78039],[1.2915,103.78044],[1.29142,103.78049],[1.2914,103.7805],[1.29129,103.78059],[1.29122,103.7807],[1.29118,103.78075],[1.29114,103.78085],[1.29112,103.78099],[1.29113,103.78111],[1.29116,103.78132],[1.29118,103.78145],[1.29127,103.7817],[1.29146,103.78211],[1.29164,103.78251],[1.29181,103.78287],[1.29196,103.78318],[1.29182,103.78328],[1.29164,103.78348],[1.2916,103.78353],[1.29167,103.78361],[1.29189,103.78385],[1.29212,103.78409],[1.29216,103.78413],[1.29221,103.78418],[1.29225,103.78423],[1.29226,103.78423],[1.29244,103.78443],[1.29279,103.78478],[1.29289,103.78487],[1.29302,103.78499],[1.29316,103.78504],[1.29323,103.78505],[1.29327,103.78506],[1.29332,103.78506],[1.29339,103.78505],[1.29349,103.78502],[1.29368,103.78494],[1.29371,103.78494],[1.29385,103.78492],[1.29407,103.7849],[1.2941,103.7849],[1.29415,103.78489],[1.29419,103.78488],[1.29423,103.78486],[1.29427,103.78484],[1.29449,103.7847],[1.29466,103.78458],[1.29473,103.78453],[1.29485,103.78445],[1.29503,103.78433],[1.29519,103.78423],[1.29526,103.78419],[1.29536,103.78413],[1.29537,103.78409],[1.29539,103.78404],[1.29543,103.78401],[1.29548,103.784],[1.29553,103.78401],[1.29596,103.78377],[1.29604,103.78371],[1.29607,103.78368],[1.29615,103.78363],[1.29623,103.78357],[1.29636,103.78345],[1.29645,103.78336],[1.2965,103.78331],[1.29664,103.78312],[1.29675,103.78294],[1.29677,103.7829],[1.29679,103.78289],[1.2969,103.78271],[1.29691,103.78267],[1.29692,103.78262],[1.29693,103.78252],[1.29693,103.78243],[1.29694,103.78237],[1.29696,103.78221],[1.29702,103.78208],[1.29717,103.78186],[1.2973,103.78168],[1.29734,103.78159],[1.29738,103.78152],[1.29738,103.78151],[1.29742,103.7814],[1.29744,103.78125],[1.29744,103.78121],[1.29744,103.78109],[1.29744,103.781],[1.29744,103.78094],[1.29743,103.78087],[1.29743,103.7808],[1.29742,103.78076],[1.29742,103.78072],[1.29741,103.78065],[1.29741,103.78057],[1.29741,103.78049],[1.29742,103.78044],[1.29743,103.78039],[1.29741,103.7803],[1.29737,103.78014],[1.29732,103.77999],[1.29726,103.77987],[1.29725,103.77984],[1.2972,103.7797],[1.29716,103.77958],[1.29713,103.77945],[1.29713,103.77938],[1.29713,103.77924],[1.29713,103.77909],[1.29718,103.77892],[1.29721,103.77885],[1.29727,103.77864],[1.29733,103.7785],[1.29736,103.77841],[1.29741,103.77827],[1.29753,103.77793],[1.29763,103.77768],[1.29768,103.7776],[1.29771,103.77754],[1.29776,103.77748],[1.29787,103.77733],[1.29797,103.7772],[1.29809,103.77706],[1.29828,103.77687],[1.29848,103.77673],[1.29866,103.77658],[1.29872,103.77649],[1.29879,103.77637],[1.29885,103.7762],[1.29888,103.77611],[1.29888,103.77602],[1.29888,103.77596],[1.29888,103.77593],[1.29885,103.77576],[1.29884,103.77561],[1.29884,103.77559],[1.29886,103.77542],[1.29886,103.7754],[1.2989,103.77525],[1.29907,103.77497],[1.29916,103.77487],[1.2992,103.77482],[1.29921,103.77474],[1.29924,103.77467],[1.29926,103.77462],[1.29923,103.77454],[1.2992,103.77451],[1.29915,103.77443],[1.29907,103.77439],[1.29893,103.7743],[1.29889,103.77428],[1.2988,103.77423],[1.29869,103.77415],[1.29848,103.77398],[1.29835,103.77385],[1.29824,103.7737],[1.29816,103.77357],[1.29796,103.77326],[1.29791,103.77321],[1.29786,103.77316],[1.29776,103.7731],[1.29769,103.77306],[1.29755,103.77301],[1.29733,103.77293],[1.29712,103.77285],[1.29706,103.77281],[1.29694,103.77276],[1.29685,103.7727],[1.29674,103.77263],[1.2967,103.7726],[1.29664,103.77255],[1.29662,103.77252],[1.29661,103.77251],[1.29653,103.77243],[1.29651,103.77241],[1.29645,103.77235],[1.29643,103.77232],[1.29641,103.7723],[1.29635,103.7722],[1.29629,103.772],[1.29625,103.77183],[1.29624,103.77171],[1.29624,103.77158],[1.29625,103.77143],[1.29627,103.77106],[1.29627,103.77101],[1.29627,103.77091],[1.29626,103.77068],[1.29625,103.7706],[1.29622,103.77041],[1.2962,103.77034],[1.29612,103.77001],[1.29609,103.76991],[1.29605,103.76977],[1.29605,103.76976],[1.29605,103.76974],[1.29605,103.76957],[1.29615,103.76957],[1.29621,103.76957],[1.2978,103.76967],[1.29787,103.76967],[1.29795,103.76967],[1.29816,103.76969],[1.2993,103.76975],[1.29962,103.76977],[1.2998,103.76978],[1.3002,103.76984],[1.30059,103.76994],[1.30063,103.76995],[1.30073,103.76999],[1.30074,103.77],[1.30084,103.77004],[1.30098,103.77011],[1.30123,103.77022],[1.30145,103.77033],[1.30156,103.77038],[1.30159,103.77033],[1.30163,103.77026],[1.30173,103.77003],[1.30179,103.76997],[1.30181,103.77005],[1.30175,103.77021],[1.30169,103.77039],[1.30167,103.77043],[1.30162,103.77056],[1.30158,103.77064],[1.30149,103.77086],[1.30129,103.77139],[1.30123,103.77156],[1.3012,103.77165],[1.30117,103.77174],[1.30113,103.77187],[1.30111,103.77199],[1.30109,103.77214],[1.30109,103.77234],[1.3011,103.77237],[1.30112,103.77252],[1.30116,103.77271],[1.30119,103.77288],[1.30119,103.7729],[1.3012,103.77303],[1.30119,103.77314],[1.30119,103.77319],[1.30116,103.7733],[1.30113,103.77342],[1.30104,103.77367],[1.30103,103.77368],[1.301,103.77377],[1.30095,103.77385],[1.30083,103.77404],[1.3008,103.77409],[1.30078,103.77414],[1.30075,103.77418],[1.30076,103.7742],[1.30076,103.77422],[1.30075,103.77424],[1.30074,103.77427],[1.30072,103.77429],[1.3007,103.77431],[1.30066,103.77432],[1.30065,103.77432],[1.3006,103.77434],[1.30055,103.77437],[1.30046,103.77443],[1.30035,103.7745],[1.30022,103.77456],[1.30008,103.77462],[1.29996,103.77464],[1.29986,103.77465],[1.29968,103.77465],[1.29963,103.77466],[1.29957,103.77467],[1.29953,103.77468],[1.29949,103.77469],[1.29941,103.7747],[1.29928,103.77479],[1.29923,103.77481],[1.2992,103.77482],[1.29916,103.77487],[1.29907,103.77497],[1.2989,103.77525],[1.29886,103.7754],[1.29886,103.77542],[1.29884,103.77559],[1.29885,103.77576],[1.29888,103.77593],[1.29888,103.77596],[1.29888,103.77602],[1.29888,103.7761],[1.29888,103.77611],[1.29885,103.7762],[1.29879,103.77637],[1.29872,103.77649],[1.29866,103.77658],[1.29848,103.77673],[1.29828,103.77687],[1.29809,103.77706],[1.29797,103.7772],[1.29787,103.77733],[1.29776,103.77748],[1.29771,103.77754],[1.29768,103.7776],[1.29763,103.77768],[1.29753,103.77793],[1.29748,103.77805],[1.29741,103.77827],[1.29736,103.77841],[1.29733,103.7785],[1.29727,103.77864],[1.29718,103.77892],[1.29713,103.77909],[1.29713,103.77924],[1.29713,103.77938],[1.29713,103.77945],[1.29716,103.77958],[1.2972,103.7797],[1.29725,103.77984],[1.29726,103.77987],[1.29732,103.77999],[1.29737,103.78014],[1.29741,103.7803],[1.29743,103.78039],[1.29744,103.78043],[1.29746,103.78051],[1.29749,103.78068],[1.29749,103.78073],[1.29751,103.78101],[1.2975,103.78121],[1.29749,103.78132],[1.29747,103.78142],[1.29744,103.78155],[1.29739,103.78164],[1.29731,103.78176],[1.29724,103.78185],[1.29716,103.78197],[1.2971,103.78207],[1.29704,103.78223],[1.29703,103.78226],[1.29702,103.78237],[1.29701,103.78239],[1.297,103.78244],[1.29699,103.78251],[1.29699,103.78253],[1.29699,103.78261],[1.29698,103.78271],[1.29697,103.78275],[1.29696,103.78286],[1.29692,103.78293],[1.29693,103.78297],[1.29692,103.783],[1.2969,103.78303],[1.29688,103.78305],[1.29686,103.78305],[1.29683,103.78306],[1.29667,103.78323],[1.29657,103.78336],[1.29647,103.78347],[1.29636,103.78357],[1.29632,103.78362],[1.29627,103.78366],[1.29619,103.78373],[1.29607,103.78381],[1.29587,103.78392],[1.29571,103.78405],[1.2956,103.78414],[1.29559,103.78418],[1.29557,103.78421],[1.29553,103.78423],[1.29549,103.78424],[1.29545,103.78424],[1.29536,103.78428],[1.29496,103.78454],[1.29495,103.78455],[1.29457,103.78484],[1.29453,103.78486],[1.29439,103.78493],[1.2942,103.785],[1.29409,103.78501],[1.29399,103.78502],[1.29389,103.78502],[1.29377,103.78503],[1.29367,103.78504],[1.29358,103.78507],[1.29356,103.78508],[1.29354,103.78509],[1.29349,103.78513],[1.29339,103.78522],[1.29334,103.78527],[1.29324,103.78537],[1.29318,103.78531],[1.29313,103.78526],[1.29286,103.785],[1.29237,103.7845],[1.29229,103.78443],[1.29213,103.78425],[1.29209,103.7842],[1.29205,103.78415],[1.29188,103.78398],[1.2916,103.78367],[1.29153,103.7836],[1.2916,103.78353],[1.29164,103.78348],[1.29182,103.78328],[1.29196,103.78318],[1.29181,103.78287],[1.29164,103.78251],[1.29146,103.78211],[1.29127,103.7817],[1.29118,103.78145],[1.29116,103.78145],[1.29114,103.78145],[1.2911,103.78143],[1.29108,103.78139],[1.29105,103.78133],[1.29104,103.7813],[1.29102,103.78124],[1.291,103.78121],[1.291,103.78115]],"R1":[[1.30179,103.76997],[1.30181,103.77005],[1.30175,103.77021],[1.30169,103.77039],[1.30167,103.77043],[1.30162,103.77056],[1.30158,103.77064],[1.30149,103.77086],[1.30129,103.77139],[1.30123,103.77156],[1.3012,103.77165],[1.30117,103.77174],[1.30113,103.77187],[1.30111,103.77199],[1.30109,103.77214],[1.30109,103.77234],[1.3011,103.77237],[1.30112,103.77252],[1.30116,103.77271],[1.30119,103.77288],[1.30119,103.7729],[1.3012,103.77303],[1.30119,103.77314],[1.30119,103.77319],[1.30116,103.7733],[1.30113,103.77342],[1.30105,103.77365],[1.30103,103.77368],[1.301,103.77377],[1.30095,103.77385],[1.30083,103.77404],[1.3008,103.77409],[1.30078,103.77414],[1.30075,103.77418],[1.30076,103.7742],[1.30077,103.77421],[1.30079,103.77424],[1.30086,103.77432],[1.30089,103.77437],[1.3009,103.77439],[1.30097,103.77443],[1.30111,103.77447],[1.30132,103.77448],[1.30145,103.77446],[1.30164,103.77439],[1.30172,103.77434],[1.30232,103.77406],[1.30257,103.77398],[1.30277,103.77395],[1.30289,103.77396],[1.30303,103.77399],[1.30316,103.77405],[1.30323,103.7741],[1.30329,103.77416],[1.30336,103.77423],[1.3035,103.77442],[1.30358,103.77454],[1.30364,103.77466],[1.30366,103.77472],[1.30368,103.77479],[1.30369,103.77503],[1.30364,103.77527],[1.30366,103.77543],[1.30368,103.77548],[1.30369,103.77553],[1.30372,103.77552],[1.30375,103.77551],[1.30378,103.77552],[1.30381,103.77553],[1.30383,103.77555],[1.30384,103.77558],[1.30385,103.77561],[1.30384,103.77564],[1.30383,103.77566],[1.30382,103.77568],[1.30379,103.7757],[1.30377,103.77571],[1.30375,103.77571],[1.30372,103.7757],[1.3037,103.77569],[1.30368,103.77567],[1.30366,103.77565],[1.30365,103.77562],[1.30366,103.77559],[1.30367,103.77556],[1.30369,103.77553],[1.30368,103.77548],[1.30366,103.77543],[1.30364,103.77527],[1.30363,103.77515],[1.30357,103.77503],[1.30355,103.77499],[1.30354,103.77495],[1.30352,103.77486],[1.3035,103.77477],[1.30349,103.77468],[1.30346,103.77457],[1.30342,103.77441],[1.30338,103.77432],[1.30336,103.77423],[1.30329,103.77416],[1.30323,103.7741],[1.30316,103.77405],[1.30303,103.77399],[1.30289,103.77396],[1.30277,103.77395],[1.30257,103.77398],[1.30232,103.77406],[1.30172,103.77434],[1.30164,103.77439],[1.30145,103.77446],[1.30132,103.77448],[1.30111,103.77447],[1.30097,103.77443],[1.3009,103.77439],[1.30089,103.77437],[1.30084,103.77437],[1.30075,103.77433],[1.3007,103.77431],[1.30066,103.77432],[1.30065,103.77432],[1.3006,103.77434],[1.30055,103.77437],[1.30046,103.77443],[1.30035,103.7745],[1.30022,103.77456],[1.30008,103.77462],[1.29996,103.77464],[1.29986,103.77465],[1.29968,103.77465],[1.29963,103.77466],[1.29957,103.77467],[1.29953,103.77468],[1.29949,103.77469],[1.29941,103.7747],[1.29935,103.7747],[1.2993,103.77467],[1.29926,103.77462],[1.29923,103.77454],[1.2992,103.77451],[1.29915,103.77443],[1.29907,103.77439],[1.29889,103.77428],[1.29889,103.77428],[1.2988,103.77423],[1.29869,103.77415],[1.29848,103.77398],[1.29835,103.77385],[1.29824,103.7737],[1.29816,103.77357],[1.29796,103.77326],[1.29791,103.77321],[1.29786,103.77316],[1.29776,103.7731],[1.29769,103.77306],[1.29755,103.77301],[1.29733,103.77293],[1.29712,103.77285],[1.29706,103.77281],[1.29694,103.77276],[1.29685,103.7727],[1.29674,103.77263],[1.2967,103.7726],[1.29664,103.77255],[1.29662,103.77252],[1.29653,103.77243],[1.29651,103.77241],[1.29645,103.77235],[1.29643,103.77232],[1.29641,103.7723],[1.29635,103.7722],[1.29634,103.77215],[1.29629,103.772],[1.29625,103.77183],[1.29624,103.77171],[1.29624,103.77158],[1.29625,103.77143],[1.29627,103.77106],[1.29627,103.77101],[1.29627,103.77091],[1.2962,103.7709],[1.29615,103.7709],[1.29605,103.77089],[1.29588,103.77087],[1.29569,103.7708],[1.29551,103.77073],[1.29535,103.77065],[1.29518,103.7706],[1.29509,103.77058],[1.29506,103.77057],[1.29497,103.77056],[1.29496,103.77056],[1.29482,103.77055],[1.29479,103.77055],[1.29459,103.77057],[1.29445,103.77061],[1.29434,103.77065],[1.29423,103.77069],[1.29417,103.77071],[1.29411,103.77075],[1.2939,103.77091],[1.29379,103.77102],[1.2937,103.77115],[1.29362,103.77128],[1.29355,103.77143],[1.2935,103.7716],[1.29348,103.77176],[1.29347,103.77178],[1.29345,103.77196],[1.29343,103.77211],[1.29341,103.77218],[1.29337,103.77235],[1.29334,103.77247],[1.29329,103.77258],[1.29324,103.7727],[1.29318,103.7728],[1.29308,103.77298],[1.29295,103.77317],[1.29268,103.77348],[1.2926,103.77355],[1.29256,103.77359],[1.29241,103.77376],[1.29234,103.77392],[1.2923,103.77404],[1.29229,103.77407],[1.29222,103.77423],[1.29221,103.77425],[1.29216,103.77441],[1.29215,103.77444],[1.29232,103.77456],[1.29248,103.77467],[1.29281,103.77492],[1.29288,103.77497],[1.2931,103.7751],[1.29324,103.77514],[1.29333,103.77517],[1.29336,103.77518],[1.29342,103.77519],[1.29355,103.77523],[1.29363,103.77526],[1.29368,103.77533],[1.2937,103.77538],[1.29371,103.7755],[1.29372,103.77555],[1.29373,103.77582],[1.29374,103.77597],[1.29374,103.77602],[1.29372,103.77615],[1.29374,103.77645],[1.29377,103.7768],[1.29377,103.77684],[1.29376,103.77687],[1.29356,103.77718],[1.29351,103.77725],[1.29314,103.7778],[1.29309,103.7779],[1.29305,103.77801],[1.29301,103.77813],[1.29298,103.77827],[1.29296,103.77862],[1.29294,103.77872],[1.29292,103.77885],[1.29289,103.77894],[1.29287,103.77897],[1.29284,103.77904],[1.29278,103.77914],[1.29265,103.77932],[1.29255,103.77945],[1.29236,103.77972],[1.29233,103.77976],[1.29228,103.77983],[1.29226,103.7799],[1.29219,103.78009],[1.29216,103.78015],[1.29216,103.78015],[1.29212,103.7802],[1.29207,103.78024],[1.29201,103.78028],[1.29195,103.78031],[1.29188,103.78034],[1.29179,103.78036]],"R2":[[1.29179,103.78036],[1.29188,103.78034],[1.29195,103.78031],[1.29201,103.78028],[1.29207,103.78024],[1.29212,103.7802],[1.29216,103.78015],[1.29216,103.78015],[1.29219,103.78009],[1.29226,103.7799],[1.29228,103.77983],[1.29233,103.77976],[1.29236,103.77972],[1.29255,103.77945],[1.29265,103.77932],[1.29278,103.77914],[1.29284,103.77904],[1.29287,103.77897],[1.29289,103.77894],[1.29292,103.77885],[1.29294,103.77872],[1.29296,103.77862],[1.29298,103.77827],[1.29301,103.77813],[1.29305,103.77801],[1.29309,103.7779],[1.29314,103.7778],[1.29351,103.77725],[1.29356,103.77718],[1.29376,103.77687],[1.29377,103.77684],[1.29377,103.7768],[1.29374,103.77645],[1.29372,103.77615],[1.29374,103.77602],[1.29374,103.77597],[1.29373,103.77582],[1.29372,103.77555],[1.29371,103.7755],[1.2937,103.77538],[1.29368,103.77533],[1.29363,103.77526],[1.29355,103.77523],[1.29342,103.77519],[1.29333,103.77517],[1.29324,103.77514],[1.2931,103.7751],[1.29299,103.77504],[1.29288,103.77497],[1.29281,103.77492],[1.29248,103.77467],[1.29232,103.77456],[1.29215,103.77444],[1.29216,103.77441],[1.29221,103.77425],[1.29219,103.77411],[1.29217,103.77406],[1.29214,103.77402],[1.292,103.77391],[1.29215,103.77386],[1.29229,103.77381],[1.29241,103.77376],[1.29256,103.77359],[1.2926,103.77355],[1.29268,103.77348],[1.29295,103.77317],[1.29308,103.77298],[1.29318,103.7728],[1.29324,103.7727],[1.29329,103.77258],[1.29334,103.77247],[1.29334,103.77245],[1.29337,103.77235],[1.29341,103.77218],[1.29343,103.77211],[1.29345,103.77196],[1.29348,103.77176],[1.2935,103.7716],[1.29355,103.77143],[1.29362,103.77128],[1.2937,103.77115],[1.29379,103.77102],[1.2939,103.77091],[1.29411,103.77075],[1.29417,103.77071],[1.29423,103.77069],[1.29434,103.77065],[1.29445,103.77061],[1.29459,103.77057],[1.29479,103.77055],[1.29496,103.77056],[1.29497,103.77056],[1.29506,103.77057],[1.29509,103.77058],[1.29518,103.7706],[1.29533,103.77065],[1.29535,103.77065],[1.29551,103.77073],[1.29569,103.7708],[1.29588,103.77087],[1.29605,103.77089],[1.29615,103.7709],[1.2962,103.7709],[1.29627,103.77091],[1.2964,103.77094],[1.2964,103.77101],[1.29639,103.77107],[1.29636,103.77161],[1.29637,103.77178],[1.2964,103.77195],[1.29644,103.77205],[1.29649,103.77214],[1.29656,103.77222],[1.29658,103.77225],[1.29662,103.77228],[1.29667,103.77232],[1.29672,103.77235],[1.29683,103.77243],[1.29698,103.77239],[1.29702,103.77239],[1.29709,103.77238],[1.29714,103.77238],[1.29717,103.7724],[1.2972,103.77241],[1.29723,103.77242],[1.29727,103.77244],[1.29717,103.77267],[1.29727,103.77244],[1.29723,103.77242],[1.2972,103.77241],[1.29717,103.7724],[1.29714,103.77238],[1.29709,103.77238],[1.29702,103.77239],[1.29701,103.77242],[1.2969,103.7725],[1.29697,103.77257],[1.2971,103.77267],[1.29726,103.77279],[1.29743,103.7729],[1.29759,103.77296],[1.29771,103.773],[1.29779,103.77303],[1.29789,103.7731],[1.298,103.7732],[1.29819,103.77346],[1.29833,103.77368],[1.29845,103.77384],[1.2986,103.77398],[1.2987,103.77405],[1.29882,103.77414],[1.29893,103.77421],[1.29918,103.77435],[1.29928,103.77439],[1.29935,103.77442],[1.29947,103.77444],[1.29957,103.77448],[1.29961,103.77451],[1.29971,103.77452],[1.2998,103.77452],[1.29991,103.77452],[1.29997,103.77451],[1.30007,103.77449],[1.30018,103.77445],[1.30034,103.77437],[1.30046,103.77431],[1.3005,103.77425],[1.30056,103.77416],[1.30058,103.77413],[1.3006,103.77412],[1.30063,103.77411],[1.30065,103.77411],[1.30068,103.77411],[1.3007,103.77412],[1.30072,103.77414],[1.30074,103.77415],[1.30075,103.77418],[1.30076,103.7742],[1.30077,103.77421],[1.30079,103.77424],[1.30086,103.77432],[1.30089,103.77437],[1.3009,103.77439],[1.30097,103.77443],[1.30111,103.77447],[1.30132,103.77448],[1.30145,103.77446],[1.30164,103.77439],[1.30172,103.77434],[1.30232,103.77406],[1.30257,103.77398],[1.30277,103.77395],[1.30289,103.77396],[1.30303,103.77399],[1.30316,103.77405],[1.30323,103.7741],[1.30329,103.77416],[1.30336,103.77423],[1.3035,103.77442],[1.30358,103.77454],[1.30364,103.77466],[1.30367,103.77478],[1.30368,103.77479],[1.30369,103.77503],[1.30364,103.77527],[1.30366,103.77543],[1.30368,103.77548],[1.30369,103.77553],[1.30372,103.77552],[1.30375,103.77551],[1.30378,103.77552],[1.30381,103.77553],[1.30383,103.77555],[1.30384,103.77558],[1.30385,103.77561],[1.30384,103.77564],[1.30383,103.77566],[1.30382,103.77568],[1.30379,103.7757],[1.30377,103.77571],[1.30375,103.77571],[1.30372,103.7757],[1.3037,103.77569],[1.30368,103.77567],[1.30366,103.77565],[1.30365,103.77562],[1.30366,103.77559],[1.30367,103.77556],[1.30369,103.77553],[1.30368,103.77548],[1.30366,103.77543],[1.30364,103.77527],[1.30363,103.77515],[1.30357,103.77503],[1.30355,103.77499],[1.30354,103.77495],[1.30352,103.77486],[1.3035,103.77477],[1.30349,103.77468],[1.30346,103.77457],[1.30342,103.77441],[1.30338,103.77432],[1.30336,103.77423],[1.30329,103.77416],[1.30323,103.7741],[1.30316,103.77405],[1.30303,103.77399],[1.30289,103.77396],[1.30277,103.77395],[1.30257,103.77398],[1.30232,103.77406],[1.30172,103.77434],[1.30164,103.77439],[1.30145,103.77446],[1.30132,103.77448],[1.30111,103.77447],[1.30097,103.77443],[1.3009,103.77439],[1.30089,103.77437],[1.30084,103.77437],[1.30075,103.77433],[1.3007,103.77431],[1.30066,103.77432],[1.30065,103.77432],[1.30063,103.77432],[1.3006,103.77431],[1.30058,103.77429],[1.30056,103.77427],[1.30055,103.77424],[1.30054,103.77421],[1.30055,103.77418],[1.30056,103.77416],[1.30058,103.77413],[1.3006,103.77412],[1.30064,103.77403],[1.30067,103.77398],[1.30076,103.77382],[1.30083,103.7737],[1.3009,103.77358],[1.30096,103.77343],[1.30098,103.77338],[1.30102,103.77323],[1.30103,103.77314],[1.30105,103.77288],[1.30102,103.77269],[1.30101,103.7726],[1.30099,103.77237],[1.30099,103.77222],[1.30101,103.77192],[1.30106,103.77173],[1.3011,103.7716],[1.30113,103.77152],[1.30119,103.77136],[1.3014,103.77081],[1.30147,103.77058],[1.3015,103.77051],[1.30156,103.77038],[1.30159,103.77033],[1.30163,103.77026],[1.30173,103.77003],[1.30179,103.76997]],"E":[[1.29443,103.77522],[1.29387,103.77546],[1.29384,103.77547],[1.29371,103.7755],[1.2937,103.77538],[1.29368,103.77533],[1.29363,103.77526],[1.29355,103.77523],[1.29342,103.77519],[1.29333,103.77517],[1.29324,103.77514],[1.2931,103.7751],[1.29288,103.77497],[1.29283,103.77494],[1.29281,103.77492],[1.29248,103.77467],[1.29232,103.77456],[1.29215,103.77444],[1.29216,103.77441],[1.29221,103.77425],[1.29219,103.77411],[1.29217,103.77406],[1.29214,103.77402],[1.292,103.77391],[1.29215,103.77386],[1.29229,103.77381],[1.29241,103.77376],[1.29256,103.77359],[1.2926,103.77355],[1.29268,103.77348],[1.29295,103.77317],[1.29308,103.77298],[1.29318,103.7728],[1.29324,103.7727],[1.29326,103.77264],[1.29329,103.77258],[1.29334,103.77247],[1.29337,103.77235],[1.29341,103.77218],[1.29343,103.77211],[1.29345,103.77196],[1.29348,103.77176],[1.2935,103.7716],[1.29355,103.77143],[1.29362,103.77128],[1.2937,103.77115],[1.29379,103.77102],[1.2939,103.77091],[1.29411,103.77075],[1.29417,103.77071],[1.29423,103.77069],[1.29434,103.77065],[1.29445,103.77061],[1.29459,103.77057],[1.29479,103.77055],[1.29496,103.77056],[1.29497,103.77056],[1.29506,103.77057],[1.29509,103.77058],[1.29518,103.7706],[1.29533,103.77065],[1.29535,103.77065],[1.29551,103.77073],[1.29569,103.7708],[1.29588,103.77087],[1.29605,103.77089],[1.29615,103.7709],[1.2962,103.7709],[1.29627,103.77091],[1.2964,103.77094],[1.2964,103.77101],[1.29639,103.77107],[1.29636,103.77161],[1.29637,103.77178],[1.2964,103.77195],[1.29644,103.77205],[1.29649,103.77214],[1.29656,103.77222],[1.29658,103.77225],[1.29662,103.77228],[1.29667,103.77232],[1.29672,103.77235],[1.29683,103.77243],[1.29698,103.77239],[1.29702,103.77239],[1.29709,103.77238],[1.29714,103.77238],[1.29717,103.7724],[1.2972,103.77241],[1.29723,103.77242],[1.29727,103.77244],[1.29717,103.77267],[1.29727,103.77244],[1.29723,103.77242],[1.2972,103.77241],[1.29717,103.7724],[1.29714,103.77238],[1.29709,103.77238],[1.29702,103.77239],[1.29701,103.77242],[1.2969,103.7725],[1.29697,103.77257],[1.2971,103.77267],[1.29726,103.77279],[1.29743,103.7729],[1.29759,103.77296],[1.29771,103.773],[1.29779,103.77303],[1.29789,103.7731],[1.298,103.7732],[1.29819,103.77346],[1.29833,103.77368],[1.29845,103.77384],[1.2986,103.77398],[1.2987,103.77405],[1.29882,103.77414],[1.29887,103.77417],[1.29918,103.77435],[1.29928,103.77439],[1.29935,103.77442],[1.29947,103.77444],[1.29957,103.77448],[1.29961,103.77451],[1.29971,103.77452],[1.2998,103.77452],[1.29991,103.77452],[1.29997,103.77451],[1.30007,103.77449],[1.30018,103.77445],[1.30034,103.77437],[1.30046,103.77431],[1.3005,103.77425],[1.30056,103.77416],[1.30058,103.77413],[1.3006,103.77412],[1.30064,103.77403],[1.30067,103.77398],[1.30076,103.77382],[1.30083,103.7737],[1.3009,103.77358],[1.30096,103.77343],[1.30098,103.77338],[1.30102,103.77323],[1.30103,103.77314],[1.30111,103.77314],[1.30119,103.77314],[1.30119,103.77319],[1.30116,103.7733],[1.30113,103.77342],[1.30104,103.77367]]};
@@ -989,6 +1171,18 @@ function openVehicleDashboard(vehplate) {
   setText('vehicleMetricGps', hasCoordinates(bus) ? `${bus.lat.toFixed(4)}, ${bus.lng.toFixed(4)}` : 'Location unknown');
   setText('vehicleMetricLastSeen', `${escapeHtml(formatTime(lastSeen(bus), true))}${lastSeen(bus) ? ' SGT' : ''}`);
 
+  const banner = $('vehicleModalInactiveBanner');
+  if (banner) {
+    if (!active || stale) {
+      const reason = inactiveReason(bus);
+      banner.className = `vehicle-inactive-banner ${reason.badgeClass}`;
+      banner.innerHTML = `<div class="inactive-reason-header"><span class="inactive-reason-icon" aria-hidden="true">${reason.icon}</span><strong class="inactive-reason-title">${escapeHtml(reason.title)}</strong></div><p class="inactive-reason-desc">${escapeHtml(reason.detail)}</p>`;
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
+  }
+
   renderVehicleDetailMap(bus);
   renderVehicleDetailChart(bus);
   renderVehicleHourlyBarChart(bus);
@@ -1132,10 +1326,12 @@ function renderVehicleDetailChart(bus) {
 
   const rolling = STATE.timeMode === 'rolling';
   const range = STATE.history24h.queryRange || {};
+  const count = BUCKETS_COUNT;
+  const lastIdx = count - 1;
   const start = rolling
-    ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - 143 * BUCKET_MS
+    ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - lastIdx * BUCKET_MS
     : new Date(`${STATE.selectedDate}T00:00:00+08:00`).getTime();
-  const buckets = Array.from({ length: 144 }, (_, i) => ({
+  const buckets = Array.from({ length: count }, (_, i) => ({
     timestamp: start + i * BUCKET_MS,
     label: formatTime(start + i * BUCKET_MS, true)
   }));
@@ -1149,14 +1345,14 @@ function renderVehicleDetailChart(bus) {
   const vehicleRows = (STATE.history24h.vehicleData || []).filter(r => r.vehplate === plate);
   const routeRows = (STATE.history24h.routeData || []).filter(r => r.route_code === routeCode);
 
-  const vehicleValues = Array(144).fill(null);
-  const vehicleOccupancies = Array(144).fill(null);
-  const routeValues = Array(144).fill(null);
-  const routeOccupancies = Array(144).fill(null);
+  const vehicleValues = Array(count).fill(null);
+  const vehicleOccupancies = Array(count).fill(null);
+  const routeValues = Array(count).fill(null);
+  const routeOccupancies = Array(count).fill(null);
 
   for (const row of vehicleRows) {
     const idx = Math.floor((row.bucket_ts - start) / BUCKET_MS);
-    if (idx >= 0 && idx < 144) {
+    if (idx >= 0 && idx < count) {
       vehicleValues[idx] = numeric(row.avg_ridership);
       vehicleOccupancies[idx] = numeric(row.avg_occupancy_pct);
     }
@@ -1164,7 +1360,7 @@ function renderVehicleDetailChart(bus) {
 
   for (const row of routeRows) {
     const idx = Math.floor((row.bucket_ts - start) / BUCKET_MS);
-    if (idx >= 0 && idx < 144) {
+    if (idx >= 0 && idx < count) {
       routeValues[idx] = numeric(row.avg_ridership);
       routeOccupancies[idx] = numeric(row.avg_occupancy_pct);
     }
@@ -1172,9 +1368,9 @@ function renderVehicleDetailChart(bus) {
 
   // Include latest live observation into timeline if not yet in aggregated bucket
   const busLastTime = lastSeen(bus);
-  if (busLastTime && busLastTime >= start && busLastTime < start + 144 * BUCKET_MS) {
+  if (busLastTime && busLastTime >= start && busLastTime < start + count * BUCKET_MS) {
     const liveIdx = Math.floor((busLastTime - start) / BUCKET_MS);
-    if (liveIdx >= 0 && liveIdx < 144 && vehicleOccupancies[liveIdx] === null) {
+    if (liveIdx >= 0 && liveIdx < count && vehicleOccupancies[liveIdx] === null) {
       if (numeric(bus.ridership) !== null) vehicleValues[liveIdx] = bus.ridership;
       if (bus.occupancy !== null && bus.occupancy !== undefined) vehicleOccupancies[liveIdx] = Math.round(bus.occupancy * 100);
     }
@@ -1188,7 +1384,7 @@ function renderVehicleDetailChart(bus) {
     ? Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25)
     : Math.max(10, Math.ceil(Math.max(0, ...observed) / 10) * 10);
 
-  const xAt = index => padding.left + (index / 143) * chartW;
+  const xAt = index => padding.left + (index / lastIdx) * chartW;
   const yAt = value => padding.top + chartH * (1 - value / maxY);
 
   if (metric === 'crowd') {
@@ -1238,13 +1434,13 @@ function renderVehicleDetailChart(bus) {
   ctx.fillStyle = '#94a3b8';
   ctx.fillText(`Route ${routeCode} Avg`, legX + 22, 14);
 
-  const step = chartW < 380 ? 48 : (chartW < 550 ? 36 : 24);
-  const endX = xAt(143);
-  const endLabel = isMobile ? formatTime(buckets[143].timestamp) : `${formatTime(buckets[143].timestamp)} SGT`;
+  const step = chartW < 380 ? Math.round(count / 3) : (chartW < 550 ? Math.round(count / 4) : Math.round(count / 6));
+  const endX = xAt(lastIdx);
+  const endLabel = isMobile ? formatTime(buckets[lastIdx].timestamp) : `${formatTime(buckets[lastIdx].timestamp)} SGT`;
   const labelY = height - (isMobile ? 10 : 12);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#64748b';
-  for (let i = 0; i < 144; i += step) {
+  for (let i = 0; i < count; i += step) {
     const x = xAt(i);
     if (endX - x < 50) continue;
     ctx.fillText(formatTime(buckets[i].timestamp), x, labelY);
@@ -1451,7 +1647,7 @@ function setupVehicleDashboardInteractivity() {
   const canvas = $('vehicleTimelineChart');
   const tooltip = $('vehicleChartTooltip');
   if (canvas) {
-    const handleTimelinePointer = (clientX) => {
+    const handleTimelinePointer = (clientX, clientY) => {
       const meta = canvas._chartMeta;
       if (!meta) return;
       const rect = canvas.getBoundingClientRect();
@@ -1464,7 +1660,8 @@ function setupVehicleDashboardInteractivity() {
         if (bus) renderVehicleDetailChart(bus);
         return;
       }
-      const index = Math.max(0, Math.min(143, Math.round(((x - meta.padding.left) / meta.chartW) * 143)));
+      const maxIdx = (meta.buckets?.length || BUCKETS_COUNT) - 1;
+      const index = Math.max(0, Math.min(maxIdx, Math.round(((x - meta.padding.left) / meta.chartW) * maxIdx)));
       STATE.vehicleHoveredIndex = index;
       const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
                   STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
@@ -1475,20 +1672,19 @@ function setupVehicleDashboardInteractivity() {
         const baseline = meta.baselineData[index];
         const timeLabel = meta.buckets[index]?.label || '';
         const unit = meta.metric === 'crowd' ? '%' : ' pax';
-        tooltip.style.display = 'block';
-        tooltip.style.left = `${Math.min(x + 12, meta.chartW - 40)}px`;
-        tooltip.style.top = '20px';
         tooltip.innerHTML = `<strong>${escapeHtml(timeLabel)} SGT</strong>` +
           (primary !== null ? `<div class="tooltip-row"><span style="color:${meta.color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(primary)}${unit}</span></div>` : `<div>No reading for ${escapeHtml(meta.plate)}</div>`) +
           (baseline !== null ? `<div class="tooltip-row"><span style="color:#94a3b8">Route ${escapeHtml(meta.routeCode)} Avg</span><span>${numberLabel(baseline)}${unit}</span></div>` : '');
+        tooltip.style.display = 'block';
+        positionChartTooltip(tooltip, canvas, clientX, clientY);
       }
     };
-    canvas.addEventListener('mousemove', event => handleTimelinePointer(event.clientX));
+    canvas.addEventListener('mousemove', event => handleTimelinePointer(event.clientX, event.clientY));
     canvas.addEventListener('touchmove', event => {
-      if (event.touches?.length) handleTimelinePointer(event.touches[0].clientX);
+      if (event.touches?.length) handleTimelinePointer(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     canvas.addEventListener('touchstart', event => {
-      if (event.touches?.length) handleTimelinePointer(event.touches[0].clientX);
+      if (event.touches?.length) handleTimelinePointer(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     const resetTimelinePointer = () => {
       if (tooltip) tooltip.style.display = 'none';
@@ -1504,7 +1700,7 @@ function setupVehicleDashboardInteractivity() {
   const hourlyCanvas = $('vehicleHourlyBarChart');
   const hourlyTooltip = $('vehicleHourlyTooltip');
   if (hourlyCanvas) {
-    const handleHourlyPointer = (clientX) => {
+    const handleHourlyPointer = (clientX, clientY) => {
       const meta = hourlyCanvas._hourlyMeta;
       if (!meta) return;
       const rect = hourlyCanvas.getBoundingClientRect();
@@ -1527,19 +1723,18 @@ function setupVehicleDashboardInteractivity() {
         const val = meta.hourlyValues[hour];
         const count = meta.hourlyCounts[hour];
         const timeLabel = `${String(hour).padStart(2, '0')}:00 - ${String(hour).padStart(2, '0')}:59 SGT`;
-        hourlyTooltip.style.display = 'block';
-        hourlyTooltip.style.left = `${Math.min(x + 12, meta.chartW - 60)}px`;
-        hourlyTooltip.style.top = '15px';
         hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
           (val !== null ? `<div class="tooltip-row"><span style="color:${crowd(val).color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(val)}% (${count} reading${count === 1 ? '' : 's'})</span></div>` : `<div>No readings for ${escapeHtml(meta.plate)}</div>`);
+        hourlyTooltip.style.display = 'block';
+        positionChartTooltip(hourlyTooltip, hourlyCanvas, clientX, clientY);
       }
     };
-    hourlyCanvas.addEventListener('mousemove', event => handleHourlyPointer(event.clientX));
+    hourlyCanvas.addEventListener('mousemove', event => handleHourlyPointer(event.clientX, event.clientY));
     hourlyCanvas.addEventListener('touchmove', event => {
-      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX);
+      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     hourlyCanvas.addEventListener('touchstart', event => {
-      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX);
+      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     const resetHourlyPointer = () => {
       if (hourlyTooltip) hourlyTooltip.style.display = 'none';

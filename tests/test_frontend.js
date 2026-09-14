@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const NOW = Date.parse('2026-09-10T16:05:00Z');
-const INTERVAL = 10 * 60 * 1000;
+const INTERVAL = 5 * 60 * 1000;
 
 function canvasContext() {
   const records = { paths: [], dots: [], text: [], rectangles: [] };
@@ -168,7 +168,7 @@ function dashboard() {
     setupChartInteractivity, fetchHistory24h,
     openVehicleDashboard, closeVehicleDashboard, renderVehicleDetailMap,
     renderVehicleDetailChart, setupVehicleDashboardInteractivity,
-    smoothSeries
+    smoothSeries, inactiveReason, nearestTerminal, positionChartTooltip
   };`, sandbox, { filename: 'public/app.js' });
   return {
     ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
@@ -273,7 +273,7 @@ test('smoothing toggle button switches between smoothed and raw view modes', asy
     }
   });
   assert.equal(ui.STATE.smoothing, 'raw');
-  assert.match(ui.element('panelTimelineSubtitle').textContent, /10-minute intervals/);
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /5-minute intervals/);
 
   // Switch back to smoothed
   await ui.element('smoothingToggleGroup').dispatch('click', {
@@ -407,7 +407,7 @@ test('dashboard date controls and chart labels use Singapore time across UTC mid
   ui.STATE.timeMode = 'date';
   ui.STATE.selectedDate = '2026-09-11';
   ui.renderTimelineChart();
-  assert.match(ui.element('panelTimelineSubtitle').textContent, /11 Sept.*00:00.*23:50.*SGT/);
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /11 Sept.*00:00.*23:55.*SGT/);
   assert.ok(ui.drawing('timelineChart').text.some(item => item.text === '00:00'));
 });
 
@@ -804,6 +804,180 @@ test('dashboard DOM, navigation, labels, and browser script stay consistent', ()
   }
   assert.ok(/leaflet[^"']*\.css/.test(html), 'The map stylesheet is loaded');
   assert.ok(/leaflet[^"']*\.js/.test(html), 'The map script is loaded');
+  assert.ok(/_vercel\/insights\/script\.js/.test(html), 'Vercel Analytics script is loaded');
+  assert.ok(/_vercel\/speed-insights\/script\.js/.test(html), 'Vercel Speed Insights script is loaded');
   assert.doesNotThrow(() => new vm.Script(app, { filename: 'public/app.js' }), 'Browser script parses');
 });
+
+test('inactiveReason correctly diagnoses parked, booster, turnaround, overnight, route, and signal gap reasons', () => {
+  const ui = dashboard();
+
+  // 1. Overnight shutdown (>5h elapsed or late night)
+  const overnightBus = bus({
+    vehplate: 'PD964H', route_code: 'A1',
+    last_seen_at: Date.parse('2026-09-10T15:20:00Z') // 23:20 SGT
+  });
+  const overnightRes = ui.inactiveReason(overnightBus, Date.parse('2026-09-11T02:10:00Z'));
+  assert.equal(overnightRes.type, 'overnight');
+  assert.match(overnightRes.title, /Overnight shutdown/);
+
+  // 2. Peak-hour route window closed (R1 or R2 >= 20m elapsed)
+  const peakRouteBus = bus({
+    vehplate: 'PD660J', route_code: 'R1',
+    last_seen_at: Date.parse('2026-09-11T00:20:00Z') // 08:20 SGT
+  });
+  const peakRouteRes = ui.inactiveReason(peakRouteBus, Date.parse('2026-09-11T02:10:00Z'));
+  assert.equal(peakRouteRes.type, 'peak_route');
+  assert.match(peakRouteRes.detail, /peak lecture transition/);
+
+  // 3. Completed trip & parked at terminal (0 pax, near COM3)
+  const parkedBus = bus({
+    vehplate: 'PC3957P', route_code: 'D1',
+    lat: 1.294431, lng: 103.775217, speed: 0, ridership: 0, occupancy: 0,
+    last_seen_at: Date.parse('2026-09-11T01:50:00Z') // 09:50 SGT
+  });
+  const parkedRes = ui.inactiveReason(parkedBus, Date.parse('2026-09-11T02:10:00Z'));
+  assert.equal(parkedRes.type, 'parked');
+  assert.match(parkedRes.detail, /COM 3/);
+
+  // 4. Peak booster shift ended (tail of morning rush 09:35 - 10:20 SGT with high load)
+  const boosterBus = bus({
+    vehplate: 'PD1022U', route_code: 'A1',
+    lat: 1.296, lng: 103.776, speed: 20, ridership: 45, occupancy: 0.75,
+    last_seen_at: Date.parse('2026-09-11T01:51:00Z') // 09:51 SGT
+  });
+  const boosterRes = ui.inactiveReason(boosterBus, Date.parse('2026-09-11T02:10:00Z'));
+  assert.equal(boosterRes.type, 'peak_booster');
+  assert.match(boosterRes.detail, /Morning lecture rush concluded/);
+
+  // 5. Short turnaround layover (<=25m elapsed at terminal)
+  const turnaroundBus = bus({
+    vehplate: 'PD629B', route_code: 'A1',
+    lat: 1.294536, lng: 103.77, speed: 0, ridership: 10, occupancy: 0.15,
+    last_seen_at: Date.parse('2026-09-11T02:00:00Z') // 10:00 SGT (10m ago)
+  });
+  const turnaroundRes = ui.inactiveReason(turnaroundBus, Date.parse('2026-09-11T02:10:00Z'));
+  assert.equal(turnaroundRes.type, 'turnaround');
+  assert.match(turnaroundRes.detail, /Kent Ridge Bus Terminal/);
+
+  // 6. Transponder signal gap mid-route (recently active, moving at speed in transit)
+  const movingBus = bus({
+    vehplate: 'PD516T', route_code: 'A2',
+    lat: 1.298, lng: 103.774, speed: 33, ridership: 20, occupancy: 0.33,
+    last_seen_at: Date.parse('2026-09-11T02:00:00Z') // 10:00 SGT (10m ago)
+  });
+  const movingRes = ui.inactiveReason(movingBus, Date.parse('2026-09-11T02:10:00Z'));
+  assert.equal(movingRes.type, 'signal_gap');
+  assert.match(movingRes.detail, /33 km\/h/);
+});
+
+test('renderFleetGrid and vehicle dashboard modal display inactive reasons', () => {
+  const ui = dashboard();
+  const testBus = bus({
+    vehplate: 'PC3957P', route_code: 'D1', status: 'stale',
+    lat: 1.294431, lng: 103.775217, speed: 0, ridership: 0, occupancy: 0,
+    last_seen_at: NOW - 3600000
+  });
+  ui.STATE.allFleet = [testBus];
+  ui.renderFleetGrid();
+
+  const gridHtml = ui.element('fleetGrid').innerHTML;
+  assert.match(gridHtml, /bus-inactive-reason/);
+  assert.match(gridHtml, /Overnight shutdown \/ past shift/);
+  assert.match(gridHtml, /Service concluded for the night/);
+
+  // Open modal for inactive bus
+  ui.openVehicleDashboard('PC3957P');
+  const banner = ui.element('vehicleModalInactiveBanner');
+  assert.equal(banner.hidden, false);
+  assert.match(banner.innerHTML, /Overnight shutdown \/ past shift/);
+  assert.match(banner.className, /reason-overnight/);
+
+  // Active bus hides the inactive banner
+  const activeBus = bus({
+    vehplate: 'PD888Z', route_code: 'A1', status: 'active',
+    last_seen_at: NOW
+  });
+  ui.STATE.allFleet = [testBus, activeBus];
+  ui.STATE.liveBuses = [activeBus];
+  ui.openVehicleDashboard('PD888Z');
+  assert.equal(banner.hidden, true);
+});
+
+test('chart tooltips flip and clamp inside container view when hovering near right edge', async () => {
+  const ui = dashboard();
+  const testBus = bus({
+    vehplate: 'PD760D', route_code: 'D2', status: 'active',
+    last_seen_at: '2026-09-14T10:30:00+08:00'
+  });
+  ui.STATE.allFleet = [testBus];
+  ui.STATE.liveBuses = [testBus];
+
+  // Open modal which renders charts and sets up interactivity
+  ui.openVehicleDashboard('PD760D');
+  ui.setupVehicleDashboardInteractivity();
+
+  const canvas = ui.element('vehicleTimelineChart');
+  const tooltip = ui.element('vehicleChartTooltip');
+  const hourlyCanvas = ui.element('vehicleHourlyBarChart');
+  const hourlyTooltip = ui.element('vehicleHourlyTooltip');
+
+  // Configure container geometry
+  canvas.parentElement = { clientWidth: 540, clientHeight: 240 };
+  canvas.offsetWidth = 512;
+  canvas.offsetHeight = 220;
+  canvas.offsetLeft = 14;
+  canvas.offsetTop = 14;
+  canvas.getBoundingClientRect = () => ({ left: 14, top: 14, width: 512, height: 220 });
+
+  tooltip.offsetWidth = 180;
+  tooltip.offsetHeight = 60;
+
+  // Simulate hover near right edge (e.g. clientX: 500, near 10:30 SGT)
+  await canvas.dispatch('mousemove', { clientX: 500, clientY: 100 });
+  assert.equal(tooltip.style.display, 'block');
+
+  const leftValue = parseInt(tooltip.style.left, 10);
+  assert.ok(!isNaN(leftValue), 'tooltip.style.left should be numeric');
+  // Tooltip must flip to the left of pointerX (500) and fit within parent width (540)
+  assert.ok(leftValue + tooltip.offsetWidth <= 540 - 8, `Right edge (${leftValue + tooltip.offsetWidth}px) must be <= 532px within 540px view`);
+  assert.ok(leftValue < 500 - 14, `Tooltip should be placed to the left of pointer (got ${leftValue}px, pointer at 500px)`);
+  assert.ok(leftValue >= 8, `Tooltip left (${leftValue}px) must be >= 8px`);
+
+  // Simulate hover near left edge (e.g. clientX: 60)
+  await canvas.dispatch('mousemove', { clientX: 60, clientY: 100 });
+  const leftEdgeValue = parseInt(tooltip.style.left, 10);
+  assert.ok(leftEdgeValue >= 60, 'Tooltip on left edge should be placed to the right of pointer');
+  assert.ok(leftEdgeValue + tooltip.offsetWidth <= 540 - 8, 'Tooltip on left edge should stay in view');
+
+  // Verify vehicleHourlyTooltip also flips and stays in view
+  hourlyCanvas.parentElement = { clientWidth: 540, clientHeight: 140 };
+  hourlyCanvas.offsetWidth = 512;
+  hourlyCanvas.offsetHeight = 120;
+  hourlyCanvas.offsetLeft = 14;
+  hourlyCanvas.offsetTop = 14;
+  hourlyCanvas.getBoundingClientRect = () => ({ left: 14, top: 14, width: 512, height: 120 });
+  hourlyTooltip.offsetWidth = 180;
+  hourlyTooltip.offsetHeight = 50;
+
+  await hourlyCanvas.dispatch('mousemove', { clientX: 480, clientY: 50 });
+  assert.equal(hourlyTooltip.style.display, 'block');
+  const hourlyLeft = parseInt(hourlyTooltip.style.left, 10);
+  assert.ok(hourlyLeft + hourlyTooltip.offsetWidth <= 540 - 8, `Hourly tooltip right edge (${hourlyLeft + hourlyTooltip.offsetWidth}px) must stay within 540px`);
+  assert.ok(hourlyLeft < 480, 'Hourly tooltip should flip to left of pointer when near right edge');
+
+  // Also test positionChartTooltip directly with edge clamping
+  const testTip = { style: {}, offsetWidth: 200, offsetHeight: 60 };
+  const testCanvas = {
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 300, height: 200 }),
+    parentElement: { clientWidth: 300, clientHeight: 200 },
+    offsetLeft: 0, offsetTop: 0
+  };
+  ui.positionChartTooltip(testTip, testCanvas, 290, 50);
+  const clampedPos = parseInt(testTip.style.left, 10);
+  assert.ok(clampedPos + 200 <= 300 - 8, 'Extreme right edge pointer clamps within narrow container');
+  assert.ok(clampedPos >= 8, 'Extreme right edge pointer maintains minimum left margin');
+});
+
+
 

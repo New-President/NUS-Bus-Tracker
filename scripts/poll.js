@@ -1,9 +1,9 @@
 /**
  * Standalone JavaScript poller for uNivUS API.
- * Polls every 10 minutes without requiring any authentication.
+ * Polls every 5 minutes without requiring any authentication.
  *
  * Usage:
- *   node scripts/poll.js           # Run continuously every 10 minutes
+ *   node scripts/poll.js           # Run continuously every 5 minutes
  *   node scripts/poll.js --once    # Run a single poll and exit
  *
  * Directly collects and persists observations using BusCollector into the database.
@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 import { getDatabase } from '../src/db.js';
 import { BusCollector } from '../src/collector.js';
 
-const INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 function nowIso() {
   return new Date().toISOString();

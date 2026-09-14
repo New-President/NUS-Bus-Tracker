@@ -13,6 +13,9 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
   <script src="app.js" defer></script>
+  <!-- Vercel Web Analytics & Speed Insights -->
+  <script defer src="/_vercel/insights/script.js"></script>
+  <script defer src="/_vercel/speed-insights/script.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -56,7 +59,7 @@
     <section class="tab-content active" id="tab-24h" role="tabpanel" aria-labelledby="tabButtonHistory">
       <div class="panel">
         <div class="panel-header-controls">
-          <div><h2 class="panel-title" id="panelTimelineTitle">Rolling 24-Hour Shuttle Readings</h2><p class="panel-subtitle" id="panelTimelineSubtitle">10-minute intervals · All times SGT</p></div>
+          <div><h2 class="panel-title" id="panelTimelineTitle">Rolling 24-Hour Shuttle Readings</h2><p class="panel-subtitle" id="panelTimelineSubtitle">5-minute intervals · All times SGT</p></div>
           <div class="chart-top-controls">
             <div class="control-group"><span class="control-label">Time window:</span><div class="toggle-group" id="timeModeToggleGroup"><button class="toggle-btn active" data-timemode="rolling" aria-pressed="true">Rolling 24 Hours</button><button class="toggle-btn" data-timemode="date" aria-pressed="false">Specific Date</button></div></div>
             <div class="date-picker-group" id="datePickerGroup" hidden>
@@ -65,13 +68,13 @@
               <button type="button" class="btn btn-sm btn-secondary" id="btnDateToday">Today</button><button type="button" class="btn btn-sm btn-secondary" id="btnDateYesterday">Yesterday</button>
             </div>
             <div class="control-group"><span class="control-label">Metric:</span><div class="toggle-group" id="viewToggleGroup"><button class="toggle-btn active" data-view="exact" aria-pressed="true">Average Passengers</button><button class="toggle-btn" data-view="crowd" aria-pressed="false">Crowd Level (%)</button></div></div>
-            <div class="control-group"><span class="control-label">Interval:</span><div class="toggle-group" id="smoothingToggleGroup"><button class="toggle-btn active" data-smoothing="smoothed" aria-pressed="true">Smoothed (30m)</button><button class="toggle-btn" data-smoothing="raw" aria-pressed="false">Raw (10m)</button></div></div>
+            <div class="control-group"><span class="control-label">Interval:</span><div class="toggle-group" id="smoothingToggleGroup"><button class="toggle-btn active" data-smoothing="smoothed" aria-pressed="true">Smoothed (30m)</button><button class="toggle-btn" data-smoothing="raw" aria-pressed="false">Raw (5m)</button></div></div>
           </div>
         </div>
         <div class="routes-filter-bar"><span class="filter-label">Display routes:</span><div class="filter-pills" id="routeFilterPills"></div></div>
         <div class="chart-wrapper"><canvas id="timelineChart" width="1100" height="420" role="img" aria-label="Shuttle readings over 24 hours" aria-describedby="chartDescription">Live history chart requires canvas support.</canvas><div id="chartTooltip" class="chart-tooltip"></div></div>
         <p class="form-hint" id="chartDescription">Missing readings remain unknown.</p>
-        <div class="chart-footer-legend"><div class="legend-zones"><span class="zone-badge zone-low">Low: &lt;35%</span><span class="zone-badge zone-medium">Medium: 35–&lt;75%</span><span class="zone-badge zone-high">High: ≥75%</span></div><div class="legend-note">Gaps mean no reported value. Hover over a 10-minute interval to inspect readings.</div></div>
+        <div class="chart-footer-legend"><div class="legend-zones"><span class="zone-badge zone-low">Low: &lt;35%</span><span class="zone-badge zone-medium">Medium: 35–&lt;75%</span><span class="zone-badge zone-high">High: ≥75%</span></div><div class="legend-note">Gaps mean no reported value. Hover over a 5-minute interval to inspect readings.</div></div>
       </div>
     </section>
 
@@ -183,6 +186,7 @@
 
       <!-- Modal Scrollable Body -->
       <div class="vehicle-modal-body">
+        <div class="vehicle-inactive-banner" id="vehicleModalInactiveBanner" hidden></div>
         <!-- Combined Dual View: Live Map (Left) + 24-Hour Crowd Analytics (Right) -->
         <div class="vehicle-dashboard-grid">
           <!-- Live Campus Map for this Bus -->
