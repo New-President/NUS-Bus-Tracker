@@ -74,7 +74,7 @@ Add these **Repository Secrets** under **Settings > Secrets and variables > Acti
 | `TURSO_DATABASE_URL` | Your Turso database URL |
 | `TURSO_AUTH_TOKEN` | A read/write Turso database token |
 
-Optional **Actions Variables** under **Settings > Secrets and variables > Actions > Variables**: `BUS_PROVIDER`, `FMS_ROUTES`, and `BUS_STOPS`. They default to `auto`, `A1,A2,D1,D2,E,K`, and `UTOWN,KR-MRT`.
+Optional **Actions Variables** under **Settings > Secrets and variables > Actions > Variables**: `BUS_PROVIDER`, `FMS_ROUTES`, and `BUS_STOPS`. They default to `auto`, `A1,A2,D1,D2,E,K,R1,R2`, and `UTOWN,KR-MRT`.
 
 The workflow is configured with `workflow_dispatch`, allowing external webhook schedulers like [cron-job.org](https://cron-job.org) to trigger it reliably via GitHub's API every 10 minutes:
 ```http
@@ -128,7 +128,7 @@ The repository includes `.github/workflows/poll.yml`, which runs `node scripts/p
 | `TURSO_DATABASE_URL` | Your Turso database URL |
 | `TURSO_AUTH_TOKEN` | A read/write Turso database token |
 
-Optional repository **Actions variables** are `BUS_PROVIDER`, `FMS_ROUTES`, and `BUS_STOPS`. They default to `auto`, `A1,A2,D1,D2,E,K`, and `UTOWN,KR-MRT`. The workflow can also be started manually from the **Actions** tab. GitHub may delay scheduled runs during periods of high load; the workflow's concurrency setting prevents delayed runs from overlapping.
+Optional repository **Actions variables** are `BUS_PROVIDER`, `FMS_ROUTES`, and `BUS_STOPS`. They default to `auto`, `A1,A2,D1,D2,E,K,R1,R2`, and `UTOWN,KR-MRT`. The workflow can also be started manually from the **Actions** tab. GitHub may delay scheduled runs during periods of high load; the workflow's concurrency setting prevents delayed runs from overlapping.
 
 ## Local checks and development
 

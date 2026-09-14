@@ -85,7 +85,7 @@ The adapter emulates the **Continue as Guest** flow in the [official uNivUS web 
 | `TURSO_DATABASE_URL` | **Required.** Turso database URL (`libsql://...` or `https://...`). | — |
 | `TURSO_AUTH_TOKEN` | **Required.** Read/write auth token for your Turso database. | — |
 | `BUS_PROVIDER` | Data source mode: `auto` (default, direct uNivUS with community fallback), `univus` (direct only), `community`, or `connectx`. | `auto` |
-| `FMS_ROUTES` | Comma-separated route codes to collect. | `A1,A2,D1,D2,E,K` |
+| `FMS_ROUTES` | Comma-separated route codes to collect. | `A1,A2,D1,D2,E,K,R1,R2` |
 | `BUS_STOPS` | Monitored stop codes for community fallback mode. | `UTOWN,KR-MRT` |
 | `ADMIN_TOKEN` | Optional bearer secret for administrative settings modification and data deletion. | — |
 | `HOST` | Bind address for local development server. | `127.0.0.1` |
