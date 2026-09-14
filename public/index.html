@@ -71,7 +71,7 @@
             <div class="control-group"><span class="control-label">Interval:</span><div class="toggle-group" id="smoothingToggleGroup"><button class="toggle-btn active" data-smoothing="smoothed" aria-pressed="true">Smoothed (30m)</button><button class="toggle-btn" data-smoothing="raw" aria-pressed="false">Raw (5m)</button></div></div>
           </div>
         </div>
-        <div class="routes-filter-bar"><span class="filter-label">Display routes:</span><div class="filter-pills" id="routeFilterPills"></div></div>
+        <div class="routes-filter-bar"><span class="filter-label">Display routes:</span><div class="filter-pills" id="routeFilterPills"></div><div class="control-group timeline-vehicle-group"><label class="control-label" for="selectTimelineVehicle">Vehicle:</label><select id="selectTimelineVehicle" class="form-select form-select-sm"><option value="all">All fleet (Campus &amp; Routes)</option></select></div></div>
         <div class="chart-wrapper"><canvas id="timelineChart" width="1100" height="420" role="img" aria-label="Shuttle readings over 24 hours" aria-describedby="chartDescription">Live history chart requires canvas support.</canvas><div id="chartTooltip" class="chart-tooltip"></div></div>
         <p class="form-hint" id="chartDescription">Missing readings remain unknown.</p>
         <div class="chart-footer-legend"><div class="legend-zones"><span class="zone-badge zone-low">Low: &lt;35%</span><span class="zone-badge zone-medium">Medium: 35–&lt;75%</span><span class="zone-badge zone-high">High: ≥75%</span></div><div class="legend-note">Gaps mean no reported value. Hover over a 5-minute interval to inspect readings.</div></div>
@@ -85,6 +85,7 @@
           <div class="map-filter-group"><span class="map-filter-label">Route:</span><div class="map-route-pills" id="mapRouteFilterPills"></div></div>
           <div class="map-filter-group"><label class="map-filter-label" for="selectBusVehicle">Vehicle:</label><select id="selectBusVehicle" class="form-select form-select-sm"><option value="all">All vehicles</option></select></div>
           <div class="map-filter-group"><label class="map-filter-label" for="selectMapCrowd">Occupancy:</label><select id="selectMapCrowd" class="form-select form-select-sm"><option value="all">All crowd levels</option><option value="low">Low (&lt;35%)</option><option value="medium">Medium (35–&lt;75%)</option><option value="high">High (≥75%)</option><option value="unknown">Unknown</option></select></div>
+          <div class="map-filter-group"><label class="map-filter-label" for="selectMapStop">Stop:</label><select id="selectMapStop" class="form-select form-select-sm"><option value="all">Jump to Bus Stop…</option></select></div>
           <div class="map-filter-group checkbox-group"><label class="checkbox-label"><input type="checkbox" id="checkShowRouteHighlights" checked> Show route highlights</label><label class="checkbox-label"><input type="checkbox" id="checkShowStops" checked> Show reference stops</label></div>
         </div>
         <p class="data-note" id="mapDataMessage" role="status">Locations update only when the live feed is collected.</p>
@@ -248,6 +249,21 @@
             <canvas id="vehicleHourlyBarChart" width="1100" height="120" role="img" aria-label="Hourly occupancy for selected bus">Hourly occupancy chart requires canvas support.</canvas>
             <div class="chart-tooltip" id="vehicleHourlyTooltip" role="tooltip" aria-hidden="true" style="display:none"></div>
           </div>
+        </div>
+
+        <!-- Stop-by-Stop Route Crowd Progression for this Bus -->
+        <div class="vehicle-stops-section" id="vehicleStopsSection">
+          <div class="vehicle-col-header">
+            <div>
+              <h3 class="vehicle-col-title">Route Stops &amp; Observed Crowd Progression</h3>
+              <p class="vehicle-col-sub" id="vehicleStopsSubtext">Sequential stops along this route with latest observed crowd and passenger readings</p>
+            </div>
+            <div class="vehicle-stops-stats" id="vehicleStopsStats">
+              <span class="badge badge-info" id="vehicleStopsCurrentNearest">Nearest: --</span>
+              <span class="badge badge-secondary" id="vehicleStopsTotalCount">0 stops</span>
+            </div>
+          </div>
+          <div class="stop-progression-wrapper" id="vehicleStopProgressionList" role="list"></div>
         </div>
       </div>
     </div>

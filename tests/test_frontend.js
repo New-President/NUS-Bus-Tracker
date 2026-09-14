@@ -80,7 +80,10 @@ function dashboard() {
         bindPopup(popup) { this.popup = popup; return this; },
         setLatLng(value) { this.location = value; return this; },
         setIcon(value) { this.icon = value; return this; },
-        setPopupContent(value) { this.popup = value; return this; }
+        setPopupContent(value) { this.popup = value; return this; },
+        on(event, handler) { this._events = this._events || {}; this._events[event] = handler; return this; },
+        isPopupOpen() { return this._popupOpen || false; },
+        openPopup() { this._popupOpen = true; if (this._events?.popupopen) this._events.popupopen(); return this; }
       };
       return marker;
     },
@@ -168,7 +171,10 @@ function dashboard() {
     setupChartInteractivity, fetchHistory24h,
     openVehicleDashboard, closeVehicleDashboard, renderVehicleDetailMap,
     renderVehicleDetailChart, setupVehicleDashboardInteractivity,
-    smoothSeries, inactiveReason, nearestTerminal, positionChartTooltip
+    smoothSeries, inactiveReason, nearestTerminal, positionChartTooltip,
+    getDistanceToStop, getServicedRoutesForStop, isBusApproachingOrAtStop,
+    getBusesNearStop, renderStopPopupHtml, renderVehicleStopProgression,
+    updateMapStopSelectDropdown, updateTimelineVehicleDropdown, fetchStopEtas
   };`, sandbox, { filename: 'public/app.js' });
   return {
     ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
@@ -978,6 +984,104 @@ test('chart tooltips flip and clamp inside container view when hovering near rig
   assert.ok(clampedPos + 200 <= 300 - 8, 'Extreme right edge pointer clamps within narrow container');
   assert.ok(clampedPos >= 8, 'Extreme right edge pointer maintains minimum left margin');
 });
+
+test('per-bus-stop crowd data, progression cards, stop selection, and arrival popups', async () => {
+  const ui = dashboard();
+  const utownStop = { name: 'University Town (UTown)', code: 'UTOWN', lat: 1.303876, lng: 103.774621 };
+  const museumStop = { name: 'NUS Museum', code: 'MUSEUM', lat: 1.301081, lng: 103.77369 };
+
+  // 1. Distance and proximity detection
+  const distSame = ui.getDistanceToStop(utownStop.lat, utownStop.lng, utownStop.lat, utownStop.lng);
+  assert.equal(Math.round(distSame), 0, 'Distance to identical coordinates should be 0');
+
+  const distNear = ui.getDistanceToStop(1.3039, 103.7746, utownStop.lat, utownStop.lng);
+  assert.ok(distNear < 100, `Close coordinate should be < 100m, got ${distNear}`);
+
+  // Test bus right at UTown stop
+  const busAtUtown = {
+    vehplate: 'PC1234A', route_code: 'D1', ridership: 45, capacity: 60,
+    occupancy: 0.75, lat: 1.303876, lng: 103.774621, speed: 0,
+    last_seen_epoch_ms: NOW
+  };
+  const proxAt = ui.isBusApproachingOrAtStop(busAtUtown, utownStop);
+  assert.equal(proxAt.isAtStop, true, 'Bus at stop coordinates should report isAtStop: true');
+  assert.equal(proxAt.isApproaching, false);
+
+  // Test bus 300m away approaching UTown stop
+  // Roughly 300m south
+  const busApproaching = {
+    vehplate: 'PC5678B', route_code: 'D1', ridership: 12, capacity: 60,
+    occupancy: 0.20, lat: 1.3012, lng: 103.7737, speed: 25,
+    last_seen_epoch_ms: NOW
+  };
+  const proxAppr = ui.isBusApproachingOrAtStop(busApproaching, utownStop);
+  assert.equal(proxAppr.isAtStop, false);
+  assert.equal(proxAppr.isApproaching, true, 'Bus ~300m away should report isApproaching: true');
+
+  // 2. Serviced routes for stop
+  const utownRoutes = ui.getServicedRoutesForStop('UTOWN', 'University Town (UTown)');
+  assert.ok(utownRoutes.includes('D1'), 'UTown should be serviced by D1');
+  assert.ok(utownRoutes.includes('D2'), 'UTown should be serviced by D2');
+  assert.ok(utownRoutes.includes('E'), 'UTown should be serviced by E');
+
+  // 3. Stop popup rendering with buses and ETAs
+  ui.STATE.liveBuses = [busAtUtown, busApproaching];
+  const popupHtml = ui.renderStopPopupHtml(utownStop);
+  assert.ok(popupHtml.includes('University Town (UTown)'), 'Popup should display stop title');
+  assert.ok(popupHtml.includes('PC1234A'), 'Popup should list bus at stop');
+  assert.ok(popupHtml.includes('At Stop'), 'Popup should indicate At Stop status');
+  assert.ok(popupHtml.includes('PC5678B'), 'Popup should list approaching bus');
+  assert.ok(popupHtml.includes('Approaching'), 'Popup should indicate Approaching status');
+  assert.ok(popupHtml.includes('45 pax'), 'Popup should display ridership for arriving bus');
+  assert.ok(popupHtml.includes('btn-open-bus-dashboard'), 'Popup should include quick action to inspect dashboard');
+
+  // Fallback when no buses are approaching
+  ui.STATE.liveBuses = [];
+  const emptyPopupHtml = ui.renderStopPopupHtml(utownStop);
+  assert.ok(emptyPopupHtml.includes('No buses currently approaching this stop'), 'Popup displays clean fallback when no buses are active');
+
+  // Stop popup with live API ETAs
+  const mockEtas = {
+    busStopName: 'University Town',
+    timings: [
+      { name: 'D1', arrivalTime: 'Arr', arrivalTime_veh_plate: 'PC1234A', nextArrivalTime: '8', nextArrivalTime_veh_plate: 'PC9999Z' },
+      { name: 'D2', arrivalTime: '4', arrivalTime_veh_plate: 'PC8888Y', nextArrivalTime: '12', nextArrivalTime_veh_plate: null }
+    ]
+  };
+  const etaPopupHtml = ui.renderStopPopupHtml(utownStop, mockEtas);
+  assert.ok(etaPopupHtml.includes('PC8888Y'), 'Popup displays live ETA vehicle plate');
+  assert.ok(etaPopupHtml.includes('4 min'), 'Popup displays scheduled arrival minutes');
+
+  // 4. Vehicle Stop Progression Card rendering
+  ui.STATE.liveBuses = [busAtUtown];
+  ui.renderVehicleStopProgression(busAtUtown);
+  const progList = ui.sandbox.document.getElementById('vehicleStopProgressionList');
+  assert.ok(progList.innerHTML.includes('stop-progression-card'), 'Renders stop progression cards');
+  assert.ok(progList.innerHTML.includes('📍 At Stop'), 'Marks current stop with At Stop badge');
+  assert.ok(progList.innerHTML.includes('45 / 60 pax'), 'Shows bus crowd occupancy along route progression');
+  assert.ok(ui.sandbox.document.getElementById('vehicleStopsTotalCount').textContent.includes('stops'), 'Displays total stop count');
+  assert.ok(ui.sandbox.document.getElementById('vehicleStopsCurrentNearest').textContent.includes('University Town'), 'Identifies nearest stop');
+
+  // 5. Dropdown selectors
+  ui.STATE.allFleet = [busAtUtown, busApproaching];
+  ui.updateMapStopSelectDropdown();
+  const selectStop = ui.sandbox.document.getElementById('selectMapStop');
+  assert.ok(selectStop.innerHTML.includes('University Town (UTown)'), 'Bus stop dropdown contains campus bus stops');
+
+  ui.updateTimelineVehicleDropdown();
+  const selectVeh = ui.sandbox.document.getElementById('selectTimelineVehicle');
+  assert.ok(selectVeh.innerHTML.includes('PC1234A'), 'Timeline vehicle dropdown lists vehicle plate');
+  assert.ok(selectVeh.innerHTML.includes('PC5678B'), 'Timeline vehicle dropdown lists vehicle plate');
+
+  // 6. Interactive full analytics jump with vehicle filter
+  ui.setupVehicleDashboardInteractivity();
+  ui.STATE.selectedVehiclePlate = 'PC1234A';
+  const jumpBtn = ui.sandbox.document.getElementById('btnVehicleJumpToAnalytics');
+  assert.ok(jumpBtn, 'Jump to analytics button exists');
+  await jumpBtn.dispatch('click');
+  assert.equal(ui.STATE.selectedTimelineVehicle, 'PC1234A', 'Jump to analytics sets selectedTimelineVehicle');
+});
+
 
 
 

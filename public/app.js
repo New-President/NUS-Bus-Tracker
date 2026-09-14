@@ -65,6 +65,7 @@ const STATE = {
   fleetFilter: 'all', fleetStatusFilter: 'all', fleetSearch: '', liveBuses: [], allFleet: [], live: {},
   history24h: { routeData: [], campusData: [] }, analytics: {}, status: {}, errors: {},
   mapRouteFilter: 'all', mapBusFilter: 'all', mapCrowdFilter: 'all', mapShowStops: true, mapShowHighlights: true,
+  selectedMapStop: 'all', selectedTimelineVehicle: 'all', stopArrivalCache: new Map(),
   leafletMap: null, busMarkers: new Map(), stopMarkers: [], routeTraceGroup: null, tracedRoute: 'all', hoveredIndex: null,
   selectedVehiclePlate: null, vehicleDetailMap: null, vehicleDetailMetric: 'crowd', vehicleMarker: null, vehicleRouteTraceGroup: null, vehicleHoveredIndex: null,
   refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: ''
@@ -191,7 +192,8 @@ async function refreshAllData() {
 
 function renderAll() {
   renderRouteFilters(); updateAvailableDatesDropdown(); renderStatus(); renderSummaryCards();
-  renderTimelineChart(); renderOptimizerView(); renderFleetGrid(); updateMapBusSelectDropdown(); renderMapBuses();
+  renderTimelineChart(); renderOptimizerView(); renderFleetGrid(); updateMapBusSelectDropdown();
+  updateMapStopSelectDropdown(); updateTimelineVehicleDropdown(); renderMapBuses();
   if (STATE.selectedVehiclePlate && $('vehicleDashboardModal') && !$('vehicleDashboardModal').hidden) {
     openVehicleDashboard(STATE.selectedVehiclePlate);
   }
@@ -340,13 +342,25 @@ function renderTimelineChart() {
   const start = rolling ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - lastIdx * BUCKET_MS : new Date(`${STATE.selectedDate}T00:00:00+08:00`).getTime();
   const buckets = Array.from({ length: count }, (_, i) => ({ timestamp: start + i * BUCKET_MS, label: formatTime(start + i * BUCKET_MS, true) }));
   const seriesMap = new Map();
-  for (const code of ['CAMPUS_AVG', ...routeCodes()]) {
-    if (STATE.activeRoutes.has(code)) {
-      seriesMap.set(code, {
-        code, color: routeColor(code),
-        rawValues: Array(count).fill(null), rawOccupancies: Array(count).fill(null),
-        values: Array(count).fill(null), occupancies: Array(count).fill(null)
-      });
+  const selectedVeh = STATE.selectedTimelineVehicle;
+  const isVehMode = selectedVeh && selectedVeh !== 'all';
+  if (isVehMode) {
+    const vehBus = STATE.allFleet.find(b => b.vehplate === selectedVeh) || STATE.liveBuses.find(b => b.vehplate === selectedVeh);
+    const color = routeColor(vehBus?.route_code || 'CAMPUS_AVG');
+    seriesMap.set(selectedVeh, {
+      code: selectedVeh, color,
+      rawValues: Array(count).fill(null), rawOccupancies: Array(count).fill(null),
+      values: Array(count).fill(null), occupancies: Array(count).fill(null)
+    });
+  } else {
+    for (const code of ['CAMPUS_AVG', ...routeCodes()]) {
+      if (STATE.activeRoutes.has(code)) {
+        seriesMap.set(code, {
+          code, color: routeColor(code),
+          rawValues: Array(count).fill(null), rawOccupancies: Array(count).fill(null),
+          values: Array(count).fill(null), occupancies: Array(count).fill(null)
+        });
+      }
     }
   }
   const populate = (row, code) => {
@@ -358,8 +372,12 @@ function renderTimelineChart() {
     series.values[index] = numeric(row.avg_ridership);
     series.occupancies[index] = numeric(row.avg_occupancy_pct);
   };
-  (STATE.history24h.routeData || []).forEach(row => populate(row, row.route_code));
-  (STATE.history24h.campusData || []).forEach(row => populate(row, 'CAMPUS_AVG'));
+  if (isVehMode) {
+    (STATE.history24h.vehicleData || []).filter(r => r.vehplate === selectedVeh).forEach(row => populate(row, selectedVeh));
+  } else {
+    (STATE.history24h.routeData || []).forEach(row => populate(row, row.route_code));
+    (STATE.history24h.campusData || []).forEach(row => populate(row, 'CAMPUS_AVG'));
+  }
   if (isSmoothed) {
     for (const series of seriesMap.values()) {
       series.values = smoothSeries(series.rawValues);
@@ -558,8 +576,27 @@ function renderHourlyBarChart() {
 
 function busReadingsMarkup(bus) {
   const pct = occupancy(bus), level = busCrowd(bus);
+  let stopRow = '';
+  if (hasCoordinates(bus) && typeof NUS_BUS_STOPS !== 'undefined' && typeof getDistanceToStop === 'function') {
+    let nearestDist = Infinity;
+    let nearestName = '';
+    const serviced = typeof NUS_ROUTE_STOPS !== 'undefined' ? NUS_ROUTE_STOPS[bus.route_code] : null;
+    for (const stop of NUS_BUS_STOPS) {
+      if (serviced && !serviced.has(stop.name) && !serviced.has(stop.code)) continue;
+      const d = getDistanceToStop(bus.lat, bus.lng, stop.lat, stop.lng);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestName = stop.name;
+      }
+    }
+    if (nearestName && nearestDist < 5000) {
+      const isAt = nearestDist <= 180;
+      stopRow = `<div class="bus-meta-row stop-hint"><span class="stop-near-label">${isAt ? '📍 At Stop:' : '⚡ Near Stop:'} <strong>${escapeHtml(nearestName)}</strong> (${Math.round(nearestDist)}m)</span></div>`;
+    }
+  }
   return `<div class="bus-crowd-row"><span class="bus-pax">${numberLabel(bus.ridership)} <small>/ ${numberLabel(bus.capacity)} pax</small></span><span style="color:${level.color}">${percentLabel(pct)}</span></div>
     <div class="progress-bar-bg ${pct === null ? 'is-unknown' : ''}"><div class="progress-bar-fill" style="width:${pct === null ? 0 : Math.max(0, Math.min(100, pct))}%;background-color:${level.color}"></div></div>
+    ${stopRow}
     <div class="bus-meta-row"><span>Speed: ${numeric(bus.speed) === null ? 'Unknown' : `${numberLabel(bus.speed)} km/h`}</span><span>${hasCoordinates(bus) ? `${bus.lat.toFixed(4)}, ${bus.lng.toFixed(4)}` : 'Location unknown'}</span></div>
     <div class="bus-meta-row last-seen">Last observed: ${escapeHtml(formatTime(lastSeen(bus), true))}${lastSeen(bus) ? ' SGT' : ''}</div>`;
 }
@@ -924,6 +961,302 @@ const NUS_ROUTE_STOPS = {
   R2: new Set(["PGP","TCOMS","HSSML-OPP","NUSS-OPP","LT13-OPP","IT","YIH-OPP","MUSEUM","UTOWN","KV","Prince George's Park (PGP)","TCOMS","Opp Hon Sui Sen Memorial Library","Opp NUSS Guild House","Ventus (Opp LT13)","Information Technology (IT)","Opp Yusof Ishak House (Opp YIH)","NUS Museum","University Town (UTown)","Kent Vale"])
 };
 
+const NUS_ORDERED_ROUTE_STOPS = {
+  A1: ["PGP", "KR-MRT", "LT27", "UHALL", "UHC-OPP", "YIH", "CLB", "LT13", "AS5", "BIZ2", "TCOMS-OPP", "PGP"],
+  A2: ["PGP", "TCOMS", "HSSML-OPP", "NUSS-OPP", "LT13-OPP", "IT", "YIH-OPP", "MUSEUM", "UHC", "UHALL-OPP", "S17", "KR-MRT-OPP", "PGPR", "PGP"],
+  D1: ["COM3", "HSSML-OPP", "NUSS-OPP", "LT13-OPP", "IT", "YIH-OPP", "MUSEUM", "UTOWN", "YIH", "CLB", "LT13", "AS5", "BIZ2", "COM3"],
+  D2: ["COM3", "TCOMS-OPP", "PGP", "KR-MRT", "LT27", "UHALL", "UHC-OPP", "MUSEUM", "UTOWN", "UHC", "UHALL-OPP", "S17", "KR-MRT-OPP", "PGPR", "TCOMS", "COM3"],
+  E: ["UTOWN", "MUSEUM", "YIH", "CLB", "LT13", "AS5", "BIZ2", "COM3", "UTOWN"],
+  K: ["PGP", "KR-MRT", "LT27", "UHALL", "UHC-OPP", "YIH", "CLB", "SDE3-OPP", "JP-SCH-16151", "KV", "MUSEUM", "UHC", "UHALL-OPP", "S17", "KR-MRT-OPP", "PGPR", "PGP"],
+  R1: ["KV", "UTOWN", "MUSEUM", "YIH", "CLB", "LT13", "AS5", "BIZ2", "TCOMS-OPP", "PGP"],
+  R2: ["PGP", "TCOMS", "HSSML-OPP", "NUSS-OPP", "LT13-OPP", "IT", "YIH-OPP", "MUSEUM", "UTOWN", "KV"]
+};
+
+function getStopByCodeOrName(identifier) {
+  if (!identifier) return null;
+  return NUS_BUS_STOPS.find(s => s.code === identifier || s.name === identifier) || null;
+}
+
+function getDistanceToStop(lat1, lon1, lat2, lon2) {
+  if (lat1 === null || lon1 === null || lat2 === null || lon2 === null ||
+      lat1 === undefined || lon1 === undefined || lat2 === undefined || lon2 === undefined) return Infinity;
+  const R = 6371e3;
+  const phi1 = lat1 * Math.PI / 180;
+  const phi2 = lat2 * Math.PI / 180;
+  const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+  const deltaLambda = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+            Math.cos(phi1) * Math.cos(phi2) *
+            Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function getServicedRoutesForStop(stopCode, stopName) {
+  const routes = [];
+  for (const [route, stops] of Object.entries(NUS_ROUTE_STOPS)) {
+    if ((stopCode && stops.has(stopCode)) || (stopName && stops.has(stopName))) {
+      routes.push(route);
+    }
+  }
+  return routes;
+}
+
+async function fetchStopEtas(stopCode) {
+  if (!stopCode) return null;
+  const now = Date.now();
+  const cached = STATE.stopArrivalCache.get(stopCode);
+  if (cached && (now - cached.timestamp < 30000)) {
+    return cached.data;
+  }
+  try {
+    const res = await fetch(`https://bus.hewliyang.com/api/stop/${encodeURIComponent(stopCode)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const result = data.etas || data;
+    STATE.stopArrivalCache.set(stopCode, { timestamp: now, data: result });
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+function isBusApproachingOrAtStop(bus, stop, stopEtas = null) {
+  if (!bus || !stop || !hasCoordinates(bus)) return { isAtStop: false, isApproaching: false, distance: Infinity, eta: null };
+  const dist = getDistanceToStop(bus.lat, bus.lng, stop.lat, stop.lng);
+  let isAtStop = dist <= 180;
+  let isApproaching = dist > 180 && dist <= 500;
+  let eta = null;
+
+  if (stopEtas && Array.isArray(stopEtas.timings)) {
+    const timing = stopEtas.timings.find(t =>
+      t.arrivalTime_veh_plate === bus.vehplate || t.nextArrivalTime_veh_plate === bus.vehplate
+    );
+    if (timing) {
+      eta = timing.arrivalTime;
+      if (eta === 'Arr' || eta === '1' || isAtStop) {
+        isAtStop = true;
+        isApproaching = false;
+      } else {
+        isApproaching = true;
+      }
+    }
+  }
+
+  return { isAtStop, isApproaching, distance: dist, eta };
+}
+
+function getBusesNearStop(stopCode, stopName, stopLat, stopLng, stopEtas = null) {
+  const serviced = getServicedRoutesForStop(stopCode, stopName);
+  const stopObj = { code: stopCode, name: stopName, lat: stopLat, lng: stopLng };
+  const matchingBuses = [];
+
+  for (const bus of STATE.liveBuses) {
+    if (!serviced.includes(bus.route_code) || !hasCoordinates(bus)) continue;
+    const proximity = isBusApproachingOrAtStop(bus, stopObj, stopEtas);
+    if (proximity.isAtStop || proximity.isApproaching || proximity.distance <= 600) {
+      matchingBuses.push({
+        ...bus,
+        isAtStop: proximity.isAtStop,
+        isApproaching: proximity.isApproaching,
+        distance: proximity.distance,
+        eta: proximity.eta
+      });
+    }
+  }
+
+  matchingBuses.sort((a, b) => {
+    if (a.isAtStop && !b.isAtStop) return -1;
+    if (!a.isAtStop && b.isAtStop) return 1;
+    return a.distance - b.distance;
+  });
+
+  return matchingBuses;
+}
+
+function renderStopPopupHtml(stop, stopEtas = null) {
+  const serviced = getServicedRoutesForStop(stop.code, stop.name);
+  const buses = getBusesNearStop(stop.code, stop.name, stop.lat, stop.lng, stopEtas);
+  const routePills = serviced.map(rc => `<span class="badge" style="background-color:${routeColor(rc)};color:#fff;font-weight:700">${escapeHtml(rc)}</span>`).join(' ');
+
+  let busesHtml = '';
+  if (buses.length) {
+    busesHtml = buses.map(bus => {
+      const color = routeColor(bus.route_code);
+      const lvl = busCrowd(bus);
+      const pct = occupancy(bus);
+      const statusLabel = bus.isAtStop ? 'At Stop' : bus.isApproaching ? 'Approaching' : `${Math.round(bus.distance)}m away`;
+      const statusClass = bus.isAtStop ? 'status-at-stop' : bus.isApproaching ? 'status-approaching' : 'status-upcoming';
+      const etaLabel = bus.eta ? (bus.eta === 'Arr' ? 'Arr' : `${bus.eta}m`) : (bus.isAtStop ? 'Now' : (bus.isApproaching ? '~2m' : ''));
+
+      return `
+        <div class="stop-popup-bus-row">
+          <div class="stop-popup-bus-left">
+            <span class="badge" style="background-color:${color};color:#fff;font-weight:700;font-size:0.75rem">${escapeHtml(bus.route_code)}</span>
+            <div class="stop-popup-bus-info">
+              <span class="stop-popup-bus-plate">${escapeHtml(bus.vehplate)}</span>
+              <span class="stop-popup-bus-sub"><span class="stop-card-status-badge ${statusClass}">${statusLabel}</span> · ${percentLabel(pct)}</span>
+            </div>
+          </div>
+          <div class="stop-popup-bus-right">
+            <span class="badge ${lvl.badge}" style="font-size:0.7rem">${lvl.label} (${numberLabel(bus.ridership)} pax)</span>
+            ${etaLabel ? `<span class="stop-popup-eta">${etaLabel}</span>` : ''}
+            <button type="button" class="stop-popup-inspect-btn btn-open-bus-dashboard" data-plate="${escapeHtml(bus.vehplate)}">Inspect Bus ↗</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } else {
+    let etaListHtml = '';
+    if (stopEtas && Array.isArray(stopEtas.timings) && stopEtas.timings.length) {
+      const activeTimings = stopEtas.timings.filter(t => t.arrivalTime && t.arrivalTime !== '-');
+      if (activeTimings.length) {
+        etaListHtml = activeTimings.map(t => `
+          <div class="stop-popup-bus-row">
+            <div class="stop-popup-bus-left">
+              <span class="badge" style="background-color:${routeColor(t.name)};color:#fff;font-weight:700;font-size:0.75rem">${escapeHtml(t.name)}</span>
+              <span class="stop-popup-bus-sub">${t.arrivalTime_veh_plate ? escapeHtml(t.arrivalTime_veh_plate) : 'Scheduled arrival'}</span>
+            </div>
+            <div class="stop-popup-bus-right">
+              <span class="stop-popup-eta">${t.arrivalTime === 'Arr' ? 'Arriving' : `${t.arrivalTime} min`}</span>
+            </div>
+          </div>
+        `).join('');
+      }
+    }
+    busesHtml = etaListHtml || '<div class="stop-popup-empty">No buses currently approaching this stop.</div>';
+  }
+
+  return `
+    <div class="map-popup-card stop-popup" data-stop-code="${escapeHtml(stop.code || '')}">
+      <div class="stop-popup-header">
+        <h4 class="stop-popup-title">${escapeHtml(stop.name)}</h4>
+        <div class="stop-popup-routes">${routePills}</div>
+      </div>
+      <div class="stop-popup-buses">
+        ${busesHtml}
+      </div>
+    </div>
+  `;
+}
+
+function updateStopMarkerPopups() {
+  for (const marker of STATE.stopMarkers) {
+    if (marker.isPopupOpen && marker.isPopupOpen()) {
+      const stop = NUS_BUS_STOPS.find(s => s.code === marker.stopCode || s.name === marker.stopName);
+      if (stop) {
+        const cached = STATE.stopArrivalCache.get(stop.code)?.data;
+        marker.setPopupContent(renderStopPopupHtml(stop, cached));
+      }
+    }
+  }
+}
+
+function updateMapStopSelectDropdown() {
+  const select = $('selectMapStop');
+  if (!select) return;
+  const stops = [...NUS_BUS_STOPS].sort((a, b) => a.name.localeCompare(b.name));
+  select.innerHTML = '<option value="all">Jump to Bus Stop…</option>' + stops.map(s => `<option value="${escapeHtml(s.code || s.name)}">${escapeHtml(s.name)}</option>`).join('');
+  select.value = STATE.selectedMapStop;
+}
+
+function updateTimelineVehicleDropdown() {
+  const select = $('selectTimelineVehicle');
+  if (!select) return;
+  const buses = [...STATE.allFleet].sort((a, b) => String(a.vehplate).localeCompare(String(b.vehplate)));
+  select.innerHTML = '<option value="all">All fleet (Campus &amp; Routes)</option>' + buses.map(b => `<option value="${escapeHtml(b.vehplate)}">${escapeHtml(b.vehplate)} (${escapeHtml(b.route_code)})</option>`).join('');
+  select.value = STATE.selectedTimelineVehicle;
+}
+
+function renderVehicleStopProgression(bus) {
+  const container = $('vehicleStopProgressionList');
+  if (!container) return;
+  const routeCode = bus?.route_code;
+  const orderedCodes = NUS_ORDERED_ROUTE_STOPS[routeCode];
+  if (!orderedCodes || !orderedCodes.length) {
+    container.innerHTML = '<div class="stop-popup-empty">No fixed stop sequence defined for this route.</div>';
+    setText('vehicleStopsCurrentNearest', 'Nearest: Unknown');
+    setText('vehicleStopsTotalCount', '0 stops');
+    return;
+  }
+
+  setText('vehicleStopsTotalCount', `${orderedCodes.length} stops`);
+
+  let nearestDist = Infinity;
+  let nearestStopName = 'Unknown';
+  const hasGps = hasCoordinates(bus);
+
+  const stopsData = orderedCodes.map((code, index) => {
+    const stop = getStopByCodeOrName(code);
+    const stopName = stop?.name || code;
+    let dist = Infinity;
+    let isAtStop = false;
+    let isApproaching = false;
+
+    if (hasGps && stop) {
+      dist = getDistanceToStop(bus.lat, bus.lng, stop.lat, stop.lng);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestStopName = stopName;
+      }
+      isAtStop = dist <= 180;
+      isApproaching = dist > 180 && dist <= 500;
+    }
+
+    return {
+      index: index + 1,
+      code,
+      name: stopName,
+      dist,
+      isAtStop,
+      isApproaching
+    };
+  });
+
+  if (hasGps && nearestDist !== Infinity) {
+    setText('vehicleStopsCurrentNearest', `Nearest: ${nearestStopName} (${Math.round(nearestDist)}m)`);
+  } else {
+    setText('vehicleStopsCurrentNearest', 'Nearest: Location unknown');
+  }
+
+  const pct = occupancy(bus);
+  const lvl = busCrowd(bus);
+
+  container.innerHTML = stopsData.map(s => {
+    let cardClass = 'stop-progression-card';
+    let statusBadgeHtml = '<span class="stop-card-status-badge status-upcoming">Upcoming</span>';
+
+    if (s.isAtStop) {
+      cardClass += ' is-at-stop';
+      statusBadgeHtml = '<span class="stop-card-status-badge status-at-stop">📍 At Stop</span>';
+    } else if (s.isApproaching) {
+      cardClass += ' is-approaching';
+      statusBadgeHtml = '<span class="stop-card-status-badge status-approaching">⚡ Approaching (Next Stop)</span>';
+    }
+
+    const distLabel = Number.isFinite(s.dist) && s.dist < 50000 ? `${Math.round(s.dist)}m away` : '';
+
+    return `
+      <div class="${cardClass}" role="listitem">
+        <div class="stop-card-header">
+          <div class="stop-card-seq-name">
+            <span class="stop-seq-badge">${s.index}</span>
+            <span class="stop-card-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+          </div>
+          ${statusBadgeHtml}
+        </div>
+        <div class="stop-card-telemetry">
+          <div class="stop-card-crowd-strip">
+            <span class="badge ${lvl.badge}" style="font-size:0.7rem">${lvl.label} (${percentLabel(pct)})</span>
+            <span>${numberLabel(bus.ridership)} / ${numberLabel(bus.capacity)} pax</span>
+          </div>
+          ${distLabel ? `<span class="stop-card-dist">${distLabel}</span>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 function initLeafletMap() {
   if (typeof L === 'undefined') { setText('mapDataMessage', 'Map library unavailable. Fleet readings remain available in the Fleet tab.'); return; }
   STATE.leafletMap = L.map('leafletMap', { center: [1.2966, 103.7764], zoom: 15, minZoom: 10, maxZoom: 19 });
@@ -960,10 +1293,19 @@ function renderBusStopsOnMap() {
       iconAnchor: [6, 6]
     });
     const marker = L.marker([stop.lat, stop.lng], { icon }).addTo(STATE.leafletMap);
-    const routeStatusHtml = hasRouteFilter
-      ? `<p class="map-popup-sub"><span style="color:${routeClr};font-weight:700">Service ${escapeHtml(activeRoute)}</span>: ${isStopOnRoute ? 'Serviced Stop' : 'Not Serviced'}</p>`
-      : '<p>Campus reference location</p>';
-    marker.bindPopup(`<div class="map-popup-card"><strong>${escapeHtml(stop.name)}</strong>${routeStatusHtml}</div>`);
+    marker.stopCode = stop.code;
+    marker.stopName = stop.name;
+
+    marker.bindPopup(renderStopPopupHtml(stop));
+    marker.on?.('popupopen', async () => {
+      if (stop.code) {
+        const etas = await fetchStopEtas(stop.code);
+        if (etas && marker.getPopup && marker.isPopupOpen && marker.isPopupOpen()) {
+          marker.setPopupContent(renderStopPopupHtml(stop, etas));
+        }
+      }
+    });
+
     STATE.stopMarkers.push(marker);
   }
 }
@@ -1111,6 +1453,7 @@ function renderMapBuses() {
     else { marker = L.marker([bus.lat, bus.lng], { icon }).addTo(STATE.leafletMap).bindPopup(popup); STATE.busMarkers.set(bus.vehplate, marker); }
   }
   for (const [plate, marker] of STATE.busMarkers) if (!current.has(plate)) { STATE.leafletMap.removeLayer(marker); STATE.busMarkers.delete(plate); }
+  updateStopMarkerPopups();
 }
 function updateMapBusSelectDropdown() {
   const buses = [...STATE.liveBuses].sort((a, b) => String(a.vehplate).localeCompare(String(b.vehplate)));
@@ -1186,6 +1529,7 @@ function openVehicleDashboard(vehplate) {
   renderVehicleDetailMap(bus);
   renderVehicleDetailChart(bus);
   renderVehicleHourlyBarChart(bus);
+  renderVehicleStopProgression(bus);
 }
 
 function closeVehicleDashboard() {
@@ -1207,25 +1551,24 @@ function renderVehicleDetailMap(bus) {
 
   const hasGps = hasCoordinates(bus);
   const routeCode = bus.route_code;
-  const routeCoords = NUS_ROUTE_PATHS[routeCode];
   const color = routeColor(routeCode);
 
   if (!STATE.vehicleDetailMap) {
     STATE.vehicleDetailMap = L.map(container, {
+      center: [1.2966, 103.7764],
+      zoom: 15,
+      minZoom: 10,
+      maxZoom: 19,
       zoomControl: true,
       attributionControl: false
     });
-    if (L.tileLayer) {
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, TomTom',
-        maxZoom: 19,
-        className: 'map-tiles-dark'
-      }).addTo(STATE.vehicleDetailMap);
-    }
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      className: 'map-tiles-dark'
+    }).addTo(STATE.vehicleDetailMap);
   }
 
-  STATE.vehicleDetailMap?.invalidateSize?.();
-
+  // Clear previous layers
   if (STATE.vehicleRouteTraceGroup) {
     STATE.vehicleDetailMap.removeLayer(STATE.vehicleRouteTraceGroup);
     STATE.vehicleRouteTraceGroup = null;
@@ -1236,19 +1579,18 @@ function renderVehicleDetailMap(bus) {
   }
 
   const layers = [];
-
-  if (routeCoords) {
-    const glow = L.polyline(routeCoords, {
+  const routeCoordinates = NUS_ROUTE_PATHS[routeCode];
+  if (routeCoordinates && routeCoordinates.length) {
+    const glow = L.polyline(routeCoordinates, {
       color,
       weight: 8,
-      opacity: 0.35,
+      opacity: 0.28,
       lineCap: 'round',
-      lineJoin: 'round',
-      interactive: false
+      lineJoin: 'round'
     });
-    const line = L.polyline(routeCoords, {
+    const line = L.polyline(routeCoordinates, {
       color,
-      weight: 3.5,
+      weight: 4,
       opacity: 0.95,
       lineCap: 'round',
       lineJoin: 'round'
@@ -1262,7 +1604,7 @@ function renderVehicleDetailMap(bus) {
 
   const servicedStops = NUS_ROUTE_STOPS[routeCode];
   for (const stop of NUS_BUS_STOPS) {
-    const isServiced = servicedStops && servicedStops.has(stop.name);
+    const isServiced = servicedStops && (servicedStops.has(stop.name) || (stop.code && servicedStops.has(stop.code)));
     const stopIcon = L.divIcon({
       className: 'bus-stop-pin-wrapper',
       html: `<div class="bus-stop-pin ${isServiced ? 'active-route-stop' : 'dimmed-route-stop'}" style="--c:${color}" title="${escapeHtml(stop.name)}"></div>`,
@@ -1270,7 +1612,28 @@ function renderVehicleDetailMap(bus) {
       iconAnchor: [7, 7]
     });
     const marker = L.marker([stop.lat, stop.lng], { icon: stopIcon });
-    marker.bindPopup?.(`<div class="map-popup-card"><strong>${escapeHtml(stop.name)}</strong><p class="map-popup-sub">${isServiced ? `Serviced by Service ${escapeHtml(routeCode)}` : 'Not on this service route'}</p></div>`);
+    if (isServiced && hasGps) {
+      const prox = isBusApproachingOrAtStop(bus, stop);
+      const statusText = prox.isAtStop ? '📍 Bus is at this stop' : prox.isApproaching ? '⚡ Bus approaching this stop' : `${Math.round(prox.distance)}m away`;
+      const lvl = busCrowd(bus);
+      marker.bindPopup?.(`
+        <div class="map-popup-card">
+          <strong>${escapeHtml(stop.name)}</strong>
+          <p class="map-popup-sub">Service ${escapeHtml(routeCode)} · ${statusText}</p>
+          <div class="stop-popup-bus-row">
+            <div class="stop-popup-bus-info">
+              <span class="stop-popup-bus-plate">${escapeHtml(bus.vehplate)}</span>
+              <span class="stop-popup-bus-sub">${statusText}</span>
+            </div>
+            <div class="stop-popup-bus-right">
+              <span class="badge ${lvl.badge}">${lvl.label} (${percentLabel(occupancy(bus))})</span>
+            </div>
+          </div>
+        </div>
+      `);
+    } else {
+      marker.bindPopup?.(`<div class="map-popup-card"><strong>${escapeHtml(stop.name)}</strong><p class="map-popup-sub">${isServiced ? `Serviced by Service ${escapeHtml(routeCode)}` : 'Not on this service route'}</p></div>`);
+    }
     layers.push(marker);
   }
 
@@ -1796,6 +2159,8 @@ function setupVehicleDashboardInteractivity() {
     closeVehicleDashboard();
     if (bus) {
       STATE.activeRoutes = new Set([bus.route_code]);
+      STATE.selectedTimelineVehicle = bus.vehplate;
+      if ($('selectTimelineVehicle')) $('selectTimelineVehicle').value = bus.vehplate;
     }
     $('tabButtonHistory')?.click();
   });
@@ -1866,6 +2231,20 @@ function setupFilters() {
     STATE.mapBusFilter = event.target.value; renderMapBuses();
     const bus = STATE.liveBuses.find(item => item.vehplate === STATE.mapBusFilter);
     if (bus && hasCoordinates(bus) && STATE.leafletMap) { STATE.leafletMap.setView([bus.lat, bus.lng], 17); STATE.busMarkers.get(bus.vehplate)?.openPopup(); }
+  });
+  $('selectMapStop')?.addEventListener('change', event => {
+    STATE.selectedMapStop = event.target.value;
+    if (STATE.selectedMapStop === 'all') return;
+    const stop = NUS_BUS_STOPS.find(s => s.code === STATE.selectedMapStop || s.name === STATE.selectedMapStop);
+    if (stop && STATE.leafletMap) {
+      STATE.leafletMap.setView([stop.lat, stop.lng], 17);
+      const marker = STATE.stopMarkers.find(m => m.stopCode === stop.code || m.stopName === stop.name);
+      if (marker) marker.openPopup();
+    }
+  });
+  $('selectTimelineVehicle')?.addEventListener('change', event => {
+    STATE.selectedTimelineVehicle = event.target.value;
+    renderTimelineChart();
   });
   $('selectMapCrowd').addEventListener('change', event => { STATE.mapCrowdFilter = event.target.value; renderMapBuses(); });
   $('checkShowRouteHighlights').addEventListener('change', event => { STATE.mapShowHighlights = event.target.checked; renderRouteTraceOnMap(true); });

@@ -2290,3 +2290,260 @@ canvas {
   padding: 0;
   gap: 12px;
 }
+
+/* Vehicle Stops & Crowd Progression */
+.vehicle-stops-section {
+  background: #131b2e;
+  border: 1px solid #273553;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vehicle-stops-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stop-progression-wrapper {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.stop-progression-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #0c1222;
+  border: 1px solid #273553;
+  border-radius: 8px;
+  padding: 10px 12px;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.stop-progression-card:hover {
+  border-color: #38bdf8;
+  background: #10182b;
+}
+
+.stop-progression-card.is-at-stop {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.08);
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+}
+
+.stop-progression-card.is-approaching {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.08);
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.15);
+}
+
+.stop-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stop-card-seq-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stop-seq-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #1e293b;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.stop-card-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stop-card-status-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.stop-card-status-badge.status-at-stop {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.stop-card-status-badge.status-approaching {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+
+.stop-card-status-badge.status-upcoming {
+  background: rgba(100, 116, 139, 0.2);
+  color: #94a3b8;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+}
+
+.stop-card-telemetry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  padding-top: 4px;
+  border-top: 1px solid rgba(39, 53, 83, 0.6);
+}
+
+.stop-card-crowd-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stop-card-dist {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+/* Map Bus Stop Popups */
+.map-popup-card.stop-popup {
+  min-width: 260px;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stop-popup-header {
+  border-bottom: 1px solid #334155;
+  padding-bottom: 6px;
+}
+
+.stop-popup-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #f8fafc;
+  margin: 0;
+}
+
+.stop-popup-routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.stop-popup-buses {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.stop-popup-bus-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: #1e293b;
+  border-radius: 6px;
+  border: 1px solid #334155;
+  gap: 6px;
+}
+
+.stop-popup-bus-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stop-popup-bus-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.stop-popup-bus-plate {
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: #f1f5f9;
+}
+
+.stop-popup-bus-sub {
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+
+.stop-popup-bus-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.stop-popup-eta {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #38bdf8;
+}
+
+.stop-popup-inspect-btn {
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #334155;
+  color: #f8fafc;
+  border: none;
+  cursor: pointer;
+  margin-top: 2px;
+}
+
+.stop-popup-inspect-btn:hover {
+  background: #38bdf8;
+  color: #0f172a;
+}
+
+.stop-popup-empty {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  padding: 6px 0;
+  text-align: center;
+}
+
+/* Timeline vehicle dropdown filter */
+.timeline-vehicle-group {
+  margin-left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
