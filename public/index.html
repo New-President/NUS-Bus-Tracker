@@ -72,6 +72,19 @@
           </div>
         </div>
         <div class="routes-filter-bar"><span class="filter-label">Display routes:</span><div class="filter-pills" id="routeFilterPills"></div><div class="control-group timeline-vehicle-group"><label class="control-label" for="selectTimelineVehicle">Vehicle:</label><select id="selectTimelineVehicle" class="form-select form-select-sm"><option value="all">All fleet (Campus &amp; Routes)</option></select></div></div>
+        <div class="timeline-nav-toolbar">
+          <div class="nav-btn-group">
+            <button type="button" class="btn btn-sm btn-secondary chart-nav-btn" id="btnTimelinePrev" title="Navigate Left (Pan left / earlier)" aria-label="Navigate Left">◀</button>
+            <button type="button" class="btn btn-sm btn-secondary chart-nav-btn" id="btnTimelineNext" title="Navigate Right (Pan right / later)" aria-label="Navigate Right">▶</button>
+          </div>
+          <div class="zoom-btn-group">
+            <button type="button" class="btn btn-sm btn-secondary chart-zoom-btn" id="btnTimelineZoomIn" title="Zoom In (+)" aria-label="Zoom In">🔍 +</button>
+            <button type="button" class="btn btn-sm btn-secondary chart-zoom-btn" id="btnTimelineZoomOut" title="Zoom Out (−)" aria-label="Zoom Out">🔍 −</button>
+            <button type="button" class="btn btn-sm btn-secondary chart-zoom-btn" id="btnTimelineZoomReset" title="Reset to full 24h view" aria-label="Reset zoom">↺ 24h</button>
+          </div>
+          <span class="timeline-window-badge" id="timelineWindowBadge">All 24 Hours</span>
+          <span class="timeline-drag-hint">Tip: Drag horizontally or scroll wheel to zoom &amp; pan</span>
+        </div>
         <div class="chart-wrapper"><canvas id="timelineChart" width="1100" height="420" role="img" aria-label="Shuttle readings over 24 hours" aria-describedby="chartDescription">Live history chart requires canvas support.</canvas><div id="chartTooltip" class="chart-tooltip"></div></div>
         <p class="form-hint" id="chartDescription">Missing readings remain unknown.</p>
         <div class="chart-footer-legend"><div class="legend-zones"><span class="zone-badge zone-low">Low: &lt;35%</span><span class="zone-badge zone-medium">Medium: 35–&lt;75%</span><span class="zone-badge zone-high">High: ≥75%</span></div><div class="legend-note">Gaps mean no reported value. Hover over a 5-minute interval to inspect readings.</div></div>

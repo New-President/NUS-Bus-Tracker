@@ -14,6 +14,7 @@ function canvasContext() {
   const ctx = {
     records,
     scale() {}, setLineDash() {}, clearRect() {},
+    save() {}, restore() {}, rect() {}, clip() {},
     beginPath() { currentPath = []; },
     moveTo(x, y) { currentPath.push({ operation: 'move', x, y }); },
     lineTo(x, y) { currentPath.push({ operation: 'line', x, y }); },
@@ -177,7 +178,9 @@ function dashboard() {
     getBusesNearStop, renderStopPopupHtml, renderVehicleStopProgression,
     updateMapStopSelectDropdown, updateTimelineVehicleDropdown, fetchStopEtas,
     promptSetStopCrowd, recordVehicleStopCrowd, updateLiveStopsCrowdReadings,
-    processSnapshotsIntoStopCrowd
+    processSnapshotsIntoStopCrowd, calculateBearing, angleDifference, getVehicleBearing,
+    updateVehicleMovement, resolveVehicleRouteProgression,
+    navigateTimeline, zoomTimeline, resetTimelineZoom
   };`, sandbox, { filename: 'public/app.js' });
   return {
     ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
@@ -1216,6 +1219,239 @@ test('vehicle route progression shows distinct per-stop crowd data, updates when
   assert.equal(ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']?.['CLB']?.ridership, 55, 'Snapshot reconstructs CLB reading');
 });
 
+test('direction tracking, route progression, and vehicle stop crowd isolation', () => {
+  const ui = dashboard();
 
+  // 1. Bearing and angle difference calculations
+  assert.equal(ui.calculateBearing(1.0, 103.0, 1.0, 103.0), null, 'Identical coordinates have no bearing');
+  const bearingNorth = ui.calculateBearing(1.2900, 103.7700, 1.3000, 103.7700);
+  assert.ok(Math.abs(bearingNorth - 0) < 0.5, 'Northward bearing should be ~0 degrees');
+  const bearingEast = ui.calculateBearing(1.2900, 103.7700, 1.2900, 103.7800);
+  assert.ok(Math.abs(bearingEast - 90) < 0.5, 'Eastward bearing should be ~90 degrees');
 
+  assert.equal(ui.angleDifference(0, 10), 10);
+  assert.equal(ui.angleDifference(350, 10), 20);
+  assert.equal(ui.angleDifference(90, 270), 180);
+  assert.equal(ui.angleDifference(null, 90), 180);
+
+  // 2. Vehicle movement tracking updates heading
+  const testBus = { vehplate: 'PC1234A', lat: 1.2950, lng: 103.7700, heading: null };
+  ui.updateVehicleMovement(testBus);
+  assert.equal(ui.getVehicleBearing(testBus), null, 'Initial position has no bearing yet');
+
+  // Move Northward 50m
+  testBus.lat = 1.2955;
+  testBus.lng = 103.7700;
+  ui.updateVehicleMovement(testBus);
+  const detectedBearing = ui.getVehicleBearing(testBus);
+  assert.ok(detectedBearing !== null, 'Should detect bearing after movement');
+  assert.ok(Math.abs(detectedBearing - 0) < 1, 'Detected bearing should be ~0 degrees (North)');
+
+  // 3. Direction-aware route progression on Service A2 (the user scenario)
+  // Stops sequence for A2:
+  // Index 3: Opp NUSS (OPPNUSS)
+  // Index 4: Ventus (LT13-OPP)
+  // Index 5: Information Technology (IT)
+  const a2BusAtVentus = {
+    vehplate: 'PC7777T',
+    route_code: 'A2',
+    lat: 1.2953, // Ventus (LT13-OPP) is ~1.2953, 103.7706
+    lng: 103.7706,
+    heading: 75, // Heading East towards IT
+    ridership: 30,
+    capacity: 90
+  };
+
+  const a2Progression = ui.resolveVehicleRouteProgression(a2BusAtVentus, [
+    'PGP', 'TCOMS', 'OPP-HSSML', 'OPPNUSS', 'LT13-OPP', 'IT', 'YIH', 'MUSEUM'
+  ]);
+
+  // Exactly 1 At Stop and at most 1 Approaching
+  const atStopCount = a2Progression.stops.filter(s => s.isAtStop).length;
+  const approachingCount = a2Progression.stops.filter(s => s.isApproaching).length;
+  assert.equal(atStopCount, 1, 'Should have exactly 1 stop marked as At Stop');
+  assert.equal(approachingCount, 1, 'Should have exactly 1 stop marked as Approaching');
+
+  // Ventus (LT13-OPP) is At Stop
+  const ventusStop = a2Progression.stops.find(s => s.code === 'LT13-OPP');
+  assert.ok(ventusStop, 'Ventus stop exists');
+  assert.equal(ventusStop.isAtStop, true, 'Ventus should be marked At Stop');
+  assert.equal(ventusStop.isApproaching, false, 'Ventus should NOT be marked Approaching');
+
+  // IT is Approaching
+  const itStop = a2Progression.stops.find(s => s.code === 'IT');
+  assert.ok(itStop, 'IT stop exists');
+  assert.equal(itStop.isApproaching, true, 'IT should be marked Approaching');
+  assert.equal(itStop.isAtStop, false, 'IT should NOT be marked At Stop');
+
+  // Opp NUSS (behind the bus) is NOT approaching and NOT at stop
+  const oppNussStop = a2Progression.stops.find(s => s.code === 'OPPNUSS');
+  assert.ok(oppNussStop, 'Opp NUSS stop exists');
+  assert.equal(oppNussStop.isAtStop, false, 'Opp NUSS must not be At Stop');
+  assert.equal(oppNussStop.isApproaching, false, 'Opp NUSS in opposite direction must not be Approaching');
+
+  // 4. Opposing stops disambiguation (e.g. LT13 vs LT13-OPP on opposite sides of the road)
+  // When heading East (75 deg) towards IT, LT13-OPP is forward route, LT13 is opposing route
+  const opposingBus = {
+    vehplate: 'PC8888S',
+    route_code: 'D1',
+    lat: 1.2953,
+    lng: 103.7706,
+    heading: 75,
+    ridership: 15,
+    capacity: 88
+  };
+  const d1Progression = ui.resolveVehicleRouteProgression(opposingBus, [
+    'OPP-HSSML', 'OPPNUSS', 'LT13-OPP', 'IT', 'YIH-OPP', 'UTOWN', 'RAFFLES', 'EA', 'S17', 'LT13', 'AS5', 'BIZ2'
+  ]);
+  const d1AtStops = d1Progression.stops.filter(s => s.isAtStop);
+  assert.equal(d1AtStops.length, 1, 'Must disambiguate to only 1 At Stop');
+  assert.equal(d1AtStops[0].code, 'LT13-OPP', 'Disambiguates to LT13-OPP aligned with heading');
+  const d1Lt13 = d1Progression.stops.find(s => s.code === 'LT13');
+  assert.equal(d1Lt13.isAtStop, false, 'Opposing LT13 across the road must NOT be At Stop');
+  assert.equal(d1Lt13.isApproaching, false, 'Opposing LT13 across the road must NOT be Approaching');
+
+  // 5. Vehicle progression DOM rendering:
+  // - No "✎ Set" button in HTML
+  // - Strictly vehicle-specific crowd isolation (no fleet fallback)
+  ui.STATE.stopCrowdStorage = {
+    byVehicle: {
+      'OTHER_BUS': {
+        'IT': { ridership: 75, capacity: 88, timestamp: Date.now() - 3600000, occupancy: 0.85 }
+      }
+    },
+    byRoute: {
+      'A2': {
+        'IT': { ridership: 75, capacity: 88, timestamp: Date.now() - 3600000, occupancy: 0.85 }
+      }
+    }
+  };
+
+  ui.renderVehicleStopProgression(a2BusAtVentus);
+  const progList = ui.element('vehicleStopProgressionList');
+
+  // Verify Set button is completely removed
+  assert.ok(!progList.innerHTML.includes('stop-card-set-btn'), 'Set button must be removed from stop progression cards');
+  assert.ok(!progList.innerHTML.includes('✎ Set'), '✎ Set text must not appear on stop progression cards');
+
+  // Verify vehicle isolation: IT was only visited by OTHER_BUS, so for a2BusAtVentus it shows Awaiting stop
+  assert.ok(!progList.innerHTML.includes('75 / 88 pax'), 'Must NOT inherit crowd data from other buses on the route');
+  assert.ok(progList.innerHTML.includes('Awaiting stop'), 'Unvisited stops by this bus must display Awaiting stop');
+  assert.ok(progList.innerHTML.includes('No reading for this vehicle yet') || progList.innerHTML.includes('No reading at stop yet'),
+    'Unvisited stops by this bus must indicate no reading for this vehicle');
+
+  // Exactly 1 At Stop and 1 Approaching badge in rendered HTML
+  const atStopMatches = (progList.innerHTML.match(/📍 At Stop/g) || []).length;
+  const approachingMatches = (progList.innerHTML.match(/⚡ Approaching \(Next Stop\)/g) || []).length;
+  assert.equal(atStopMatches, 1, 'HTML must contain exactly 1 "📍 At Stop" badge');
+  assert.equal(approachingMatches, 1, 'HTML must contain exactly 1 "⚡ Approaching (Next Stop)" badge');
+});
+
+test('timeline chart renders vertical lines dividing the view into 24 parts and does not render hour slice dropdown', () => {
+  const ui = dashboard();
+  ui.STATE.timeMode = 'date';
+  ui.STATE.selectedDate = '2026-09-10';
+  ui.renderTimelineChart();
+  assert.equal(ui.STATE.timelineZoom.startIndex, 0);
+  assert.equal(ui.STATE.timelineZoom.endIndex, 287);
+  assert.equal(ui.element('timelineWindowBadge').textContent, 'All 24 Hours');
+
+  // Verify hour slice select dropdown is removed from DOM
+  assert.ok(!ui.sandbox.document.getElementById('selectHourSlice'), 'selectHourSlice dropdown must not exist');
+
+  // Canvas drawing has vertical divider lines dividing the 24 hours
+  const drawing = ui.drawing('timelineChart');
+  const verticalGridPaths = drawing.paths.filter(p => p.color === '#1e2b45');
+  // 24 hourly marks (00:00 to 23:00) + right boundary at 24:00 (index 287) = 25 lines (24 parts)
+  assert.ok(verticalGridPaths.length >= 24, `Expected at least 24 vertical divider lines, got ${verticalGridPaths.length}`);
+});
+
+test('timeline chart left and right navigation steps through the timeline and clamps at boundaries', async () => {
+  const ui = dashboard();
+  ui.STATE.timeMode = 'date';
+  ui.STATE.selectedDate = '2026-09-10';
+  ui.renderTimelineChart();
+  ui.setupChartInteractivity();
+
+  // Zoom in first to create a sub-window
+  ui.zoomTimeline(0.25);
+  const initialStart = ui.STATE.timelineZoom.startIndex;
+  const initialEnd = ui.STATE.timelineZoom.endIndex;
+  const initialSpan = initialEnd - initialStart;
+  assert.ok(initialSpan < 100);
+
+  // Navigate Right (Next) via button click -> shifts forward
+  await ui.element('btnTimelineNext').click();
+  assert.ok(ui.STATE.timelineZoom.startIndex > initialStart);
+
+  // Navigate Left (Prev) via button click -> shifts backward
+  await ui.element('btnTimelinePrev').click();
+  assert.equal(ui.STATE.timelineZoom.startIndex, initialStart);
+
+  // Navigate Left repeatedly to start boundary
+  for (let i = 0; i < 10; i++) {
+    await ui.element('btnTimelinePrev').click();
+  }
+  assert.equal(ui.STATE.timelineZoom.startIndex, 0, 'Clamps at start boundary 0');
+
+  // Navigate Right repeatedly to end boundary
+  for (let i = 0; i < 20; i++) {
+    await ui.element('btnTimelineNext').click();
+  }
+  assert.equal(ui.STATE.timelineZoom.endIndex, 287, 'Clamps at end boundary 287');
+});
+
+test('timeline chart zoom in, zoom out, and reset adjust window span', async () => {
+  const ui = dashboard();
+  ui.renderTimelineChart();
+  ui.setupChartInteractivity();
+
+  assert.equal(ui.STATE.timelineZoom.endIndex - ui.STATE.timelineZoom.startIndex, 287);
+
+  // Zoom In: halves window span
+  await ui.element('btnTimelineZoomIn').click();
+  const span1 = ui.STATE.timelineZoom.endIndex - ui.STATE.timelineZoom.startIndex;
+  assert.ok(span1 < 200, `Zoom in decreased span: ${span1}`);
+
+  // Zoom In again
+  await ui.element('btnTimelineZoomIn').click();
+  const span2 = ui.STATE.timelineZoom.endIndex - ui.STATE.timelineZoom.startIndex;
+  assert.ok(span2 < span1, `Zoom in decreased span again: ${span2}`);
+
+  // Zoom Out: doubles window span
+  await ui.element('btnTimelineZoomOut').click();
+  const span3 = ui.STATE.timelineZoom.endIndex - ui.STATE.timelineZoom.startIndex;
+  assert.ok(span3 > span2, `Zoom out increased span: ${span3}`);
+
+  // Zoom Reset: restores full 24h
+  await ui.element('btnTimelineZoomReset').click();
+  assert.equal(ui.STATE.timelineZoom.startIndex, 0);
+  assert.equal(ui.STATE.timelineZoom.endIndex, 287);
+  assert.equal(ui.element('timelineWindowBadge').textContent, 'All 24 Hours');
+});
+
+test('timeline chart drag panning shifts visible window and hovered index respects slice', async () => {
+  const ui = dashboard();
+  ui.STATE.timeMode = 'date';
+  ui.STATE.selectedDate = '2026-09-10';
+  ui.STATE.timelineZoom = { startIndex: 96, endIndex: 108 };
+  ui.renderTimelineChart();
+  ui.setupChartInteractivity();
+
+  // Hover at left edge maps to start index (96)
+  const canvas = ui.element('timelineChart');
+  await canvas.dispatch('mousemove', { clientX: 60, clientY: 200 }); // padding.left = 60
+  assert.equal(ui.STATE.hoveredIndex, 96, 'Left edge hover corresponds to start index 96');
+
+  // Hover at right edge maps to end index (108)
+  await canvas.dispatch('mousemove', { clientX: 1048, clientY: 200 }); // width = 1072, padding.right = 24
+  assert.equal(ui.STATE.hoveredIndex, 108, 'Right edge hover corresponds to end index 108');
+
+  // Test mouse drag pan
+  await canvas.dispatch('mousedown', { clientX: 500, clientY: 200 });
+  await canvas.dispatch('mousemove', { clientX: 200, clientY: 200 }); // Dragging left by 300px
+  await canvas.dispatch('mouseup', { clientX: 200, clientY: 200 });
+
+  assert.ok(ui.STATE.timelineZoom.startIndex > 96, 'Dragging left shifted the window forward in time');
+});
 
