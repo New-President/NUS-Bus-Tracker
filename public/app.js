@@ -66,8 +66,8 @@ const STATE = {
   history24h: { routeData: [], campusData: [] }, analytics: {}, status: {}, errors: {},
   mapRouteFilter: 'all', mapBusFilter: 'all', mapCrowdFilter: 'all', mapShowStops: true, mapShowHighlights: true,
   selectedMapStop: 'all', selectedTimelineVehicle: 'all', stopArrivalCache: new Map(),
-  leafletMap: null, busMarkers: new Map(), stopMarkers: [], routeTraceGroup: null, tracedRoute: 'all', hoveredIndex: null,
-  selectedVehiclePlate: null, vehicleDetailMap: null, vehicleDetailMetric: 'crowd', vehicleMarker: null, vehicleRouteTraceGroup: null, vehicleHoveredIndex: null,
+  leafletMap: null, busMarkers: new Map(), stopMarkers: [], routeTraceGroup: null, tracedRoute: 'all', hoveredIndex: null, campusHourlyHoveredIndex: null,
+  selectedVehiclePlate: null, vehicleDetailMap: null, vehicleDetailMetric: 'crowd', vehicleMarker: null, vehicleRouteTraceGroup: null, vehicleHoveredIndex: null, vehicleHourlyHoveredIndex: null,
   refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: ''
 };
 const ROUTE_COLORS = { CAMPUS_AVG: '#38bdf8', A1: '#FB0101', A2: '#FBAE17', D1: '#9E005D', D2: '#6A1B9A', E: '#00838F', K: '#2E7D32', R1: '#10B981', R2: '#8B5CF6' };
@@ -511,6 +511,57 @@ function setupChartInteractivity() {
   }, { passive: true });
   canvas.addEventListener('mouseleave', () => { STATE.hoveredIndex = null; tooltip.style.display = 'none'; renderTimelineChart(); });
   canvas.addEventListener('touchend', () => { STATE.hoveredIndex = null; tooltip.style.display = 'none'; renderTimelineChart(); });
+
+  const hourlyCanvas = $('hourlyBarChart'), hourlyTooltip = $('hourlyChartTooltip');
+  if (hourlyCanvas) {
+    const handleHourlyPointer = (clientX, clientY) => {
+      const meta = hourlyCanvas._hourlyMeta;
+      if (!meta) return;
+      const rect = hourlyCanvas.getBoundingClientRect(), x = clientX - rect.left;
+      if (x < meta.left || x > meta.left + meta.chartW) {
+        if (hourlyTooltip) hourlyTooltip.style.display = 'none';
+        STATE.campusHourlyHoveredIndex = null;
+        renderHourlyBarChart();
+        return;
+      }
+      const hour = Math.max(0, Math.min(23, Math.floor((x - meta.left) / meta.slotW)));
+      STATE.campusHourlyHoveredIndex = hour;
+      renderHourlyBarChart();
+
+      if (hourlyTooltip) {
+        const val = meta.values.get(hour);
+        const ridership = meta.ridershipMap.get(hour);
+        const samples = meta.occSampleMap.get(hour) ?? meta.sampleMap.get(hour);
+        const timeLabel = `${String(hour).padStart(2, '0')}:00 - ${String(hour).padStart(2, '0')}:59 SGT`;
+        if (val !== undefined && val !== null) {
+          const lvl = crowd(val);
+          hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
+            `<div class="tooltip-row"><span style="color:${lvl.color}">Average Occupancy</span><span>${percentLabel(val)} (${escapeHtml(lvl.label)})</span></div>` +
+            (ridership !== null && ridership !== undefined ? `<div class="tooltip-row"><span>Avg Passenger Load</span><span>${numberLabel(ridership)} pax / bus</span></div>` : '') +
+            (samples !== null && samples !== undefined ? `<div class="tooltip-row"><span>Observations</span><span>${numberLabel(samples)} reading${samples === 1 ? '' : 's'}</span></div>` : '');
+        } else {
+          hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong><p>No telemetry observations recorded</p>`;
+        }
+        hourlyTooltip.style.display = 'block';
+        positionChartTooltip(hourlyTooltip, hourlyCanvas, clientX, clientY);
+      }
+    };
+
+    hourlyCanvas.addEventListener('mousemove', event => handleHourlyPointer(event.clientX, event.clientY));
+    hourlyCanvas.addEventListener('touchmove', event => {
+      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX, event.touches[0].clientY);
+    }, { passive: true });
+    hourlyCanvas.addEventListener('touchstart', event => {
+      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX, event.touches[0].clientY);
+    }, { passive: true });
+    const resetHourlyPointer = () => {
+      if (hourlyTooltip) hourlyTooltip.style.display = 'none';
+      STATE.campusHourlyHoveredIndex = null;
+      renderHourlyBarChart();
+    };
+    hourlyCanvas.addEventListener('mouseleave', resetHourlyPointer);
+    hourlyCanvas.addEventListener('touchend', resetHourlyPointer);
+  }
 }
 
 function renderOptimizerView() {
@@ -550,10 +601,14 @@ function renderHourlyBarChart() {
   const height = isMobile ? 200 : 260;
   const chart = chartContext('hourlyBarChart', height);
   if (!chart) return;
-  const { ctx, width } = chart;
+  const { canvas, ctx, width } = chart;
   const left = isMobile ? 38 : 50, top = 20, chartW = width - (isMobile ? 50 : 70), chartH = height - (isMobile ? 55 : 70);
   const rows = STATE.errors.analytics ? [] : STATE.analytics.campusHourly || [];
   const values = new Map(rows.map(row => [row.hour, numeric(row.avg_occupancy_pct)]));
+  const ridershipMap = new Map(rows.map(row => [row.hour, numeric(row.avg_ridership)]));
+  const sampleMap = new Map(rows.map(row => [row.hour, numeric(row.sample_count)]));
+  const occSampleMap = new Map(rows.map(row => [row.hour, numeric(row.occupancy_sample_count)]));
+  const crowdMap = new Map(rows.map(row => [row.hour, row.crowd_level]));
   const maxY = Math.max(100, Math.ceil(Math.max(0, ...[...values.values()].filter(value => value !== null)) / 25) * 25);
   ctx.font = isMobile ? '10px sans-serif' : '11px sans-serif'; ctx.textAlign = 'right';
   for (let i = 0; i <= 4; i++) {
@@ -561,17 +616,51 @@ function renderHourlyBarChart() {
     ctx.strokeStyle = '#273553'; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + chartW, y); ctx.stroke();
     ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}%`, left - (isMobile ? 6 : 8), y + (isMobile ? 3 : 4));
   }
+  const slotW = chartW / 24;
+  const barWidth = Math.max(6, slotW * 0.65);
   for (let hour = 0; hour < 24; hour++) {
-    const value = values.get(hour), x = left + hour * chartW / 24, barWidth = chartW / 24 * 0.65;
-    ctx.textAlign = 'center'; ctx.fillStyle = '#94a3b8';
-    if (hour % (chartW < 500 ? 4 : 2) === 0) ctx.fillText(String(hour).padStart(2, '0'), x + barWidth / 2, top + chartH + (isMobile ? 16 : 20));
-    if (value === undefined || value === null) { ctx.fillText('·', x + barWidth / 2, top + chartH - 5); continue; }
+    const value = values.get(hour);
+    const x = left + hour * slotW;
+    const barX = x + (slotW - barWidth) / 2;
+    const isHovered = STATE.campusHourlyHoveredIndex === hour;
+
+    if (isHovered) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.fillRect(x, top, slotW, chartH);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = isHovered ? '#f1f5f9' : '#94a3b8';
+    if (hour % (chartW < 500 ? 4 : 2) === 0 || isHovered) {
+      ctx.fillText(String(hour).padStart(2, '0'), barX + barWidth / 2, top + chartH + (isMobile ? 16 : 20));
+    }
+
+    if (value === undefined || value === null) {
+      ctx.fillStyle = isHovered ? '#64748b' : '#334155';
+      ctx.fillText('·', barX + barWidth / 2, top + chartH - 5);
+      continue;
+    }
+
+    const barH = value === 0 ? 4 : Math.max(3, value / maxY * chartH);
+    const barY = top + chartH - barH;
     ctx.fillStyle = crowd(value).color;
-    ctx.fillRect(x, top + chartH * (1 - value / maxY), barWidth, Math.max(2, value / maxY * chartH));
+    ctx.fillRect(barX, barY, barWidth, barH);
+
+    if (isHovered) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      if (typeof ctx.strokeRect === 'function') ctx.strokeRect(barX, barY, barWidth, barH);
+    }
   }
+
   if (![...values.values()].some(value => value !== null)) {
     ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'center'; ctx.fillText('No hourly occupancy readings available', left + chartW / 2, top + chartH / 2);
   }
+
+  canvas._hourlyMeta = {
+    left, top, chartW, chartH, slotW, barWidth,
+    values, ridershipMap, sampleMap, occSampleMap, crowdMap, maxY
+  };
 }
 
 function busReadingsMarkup(bus) {
@@ -1077,7 +1166,7 @@ function getBusesNearStop(stopCode, stopName, stopLat, stopLng, stopEtas = null)
 function renderStopPopupHtml(stop, stopEtas = null) {
   const serviced = getServicedRoutesForStop(stop.code, stop.name);
   const buses = getBusesNearStop(stop.code, stop.name, stop.lat, stop.lng, stopEtas);
-  const routePills = serviced.map(rc => `<span class="badge" style="background-color:${routeColor(rc)};color:#fff;font-weight:700">${escapeHtml(rc)}</span>`).join(' ');
+  const routePills = serviced.map(rc => `<span class="stop-popup-route-pill" style="background-color:${routeColor(rc)}">${escapeHtml(rc)}</span>`).join('');
 
   let busesHtml = '';
   if (buses.length) {
@@ -1085,22 +1174,30 @@ function renderStopPopupHtml(stop, stopEtas = null) {
       const color = routeColor(bus.route_code);
       const lvl = busCrowd(bus);
       const pct = occupancy(bus);
-      const statusLabel = bus.isAtStop ? 'At Stop' : bus.isApproaching ? 'Approaching' : `${Math.round(bus.distance)}m away`;
-      const statusClass = bus.isAtStop ? 'status-at-stop' : bus.isApproaching ? 'status-approaching' : 'status-upcoming';
-      const etaLabel = bus.eta ? (bus.eta === 'Arr' ? 'Arr' : `${bus.eta}m`) : (bus.isAtStop ? 'Now' : (bus.isApproaching ? '~2m' : ''));
+      const isAtStop = bus.isAtStop;
+      const isApproaching = bus.isApproaching;
+      const statusLabel = isAtStop ? 'At Stop' : isApproaching ? 'Approaching' : `${Math.round(bus.distance)}m away`;
+      const statusClass = isAtStop ? 'status-at-stop' : isApproaching ? 'status-approaching' : 'status-upcoming';
+      const statusIcon = isAtStop ? '📍 ' : isApproaching ? '⚡ ' : '';
+      const etaLabel = bus.eta ? (bus.eta === 'Arr' ? 'Now' : `${bus.eta}m`) : (isAtStop ? 'Now' : (isApproaching ? '~2m' : ''));
+      const pfillPct = pct === null ? 0 : Math.max(4, Math.min(100, Math.round(pct)));
 
       return `
         <div class="stop-popup-bus-row">
-          <div class="stop-popup-bus-left">
-            <span class="badge" style="background-color:${color};color:#fff;font-weight:700;font-size:0.75rem">${escapeHtml(bus.route_code)}</span>
-            <div class="stop-popup-bus-info">
-              <span class="stop-popup-bus-plate">${escapeHtml(bus.vehplate)}</span>
-              <span class="stop-popup-bus-sub"><span class="stop-card-status-badge ${statusClass}">${statusLabel}</span> · ${percentLabel(pct)}</span>
+          <div class="stop-popup-bus-top">
+            <div class="stop-popup-bus-identity">
+              <span class="route-badge-pill" style="background-color:${color}">${escapeHtml(bus.route_code)}</span>
+              <strong class="stop-popup-bus-plate">${escapeHtml(bus.vehplate)}</strong>
+              <span class="stop-card-status-badge ${statusClass}">${statusIcon}${statusLabel}</span>
             </div>
+            ${etaLabel ? `<span class="stop-popup-eta ${isAtStop ? 'eta-now' : ''}">${etaLabel}</span>` : ''}
           </div>
-          <div class="stop-popup-bus-right">
-            <span class="badge ${lvl.badge}" style="font-size:0.7rem">${lvl.label} (${numberLabel(bus.ridership)} pax)</span>
-            ${etaLabel ? `<span class="stop-popup-eta">${etaLabel}</span>` : ''}
+          <div class="stop-popup-bus-bottom">
+            <div class="stop-popup-bus-metrics">
+              <div class="stop-popup-pbar"><div class="stop-popup-pfill" style="width:${pfillPct}%;background-color:${lvl.color}"></div></div>
+              <span class="stop-popup-pax">${numberLabel(bus.ridership)} pax (${percentLabel(pct)})</span>
+              <span class="badge ${lvl.badge}" style="font-size:0.68rem;padding:1px 5px">${lvl.label}</span>
+            </div>
             <button type="button" class="stop-popup-inspect-btn btn-open-bus-dashboard" data-plate="${escapeHtml(bus.vehplate)}">Inspect Bus ↗</button>
           </div>
         </div>
@@ -1112,13 +1209,13 @@ function renderStopPopupHtml(stop, stopEtas = null) {
       const activeTimings = stopEtas.timings.filter(t => t.arrivalTime && t.arrivalTime !== '-');
       if (activeTimings.length) {
         etaListHtml = activeTimings.map(t => `
-          <div class="stop-popup-bus-row">
-            <div class="stop-popup-bus-left">
-              <span class="badge" style="background-color:${routeColor(t.name)};color:#fff;font-weight:700;font-size:0.75rem">${escapeHtml(t.name)}</span>
-              <span class="stop-popup-bus-sub">${t.arrivalTime_veh_plate ? escapeHtml(t.arrivalTime_veh_plate) : 'Scheduled arrival'}</span>
-            </div>
-            <div class="stop-popup-bus-right">
-              <span class="stop-popup-eta">${t.arrivalTime === 'Arr' ? 'Arriving' : `${t.arrivalTime} min`}</span>
+          <div class="stop-popup-bus-row eta-only">
+            <div class="stop-popup-bus-top">
+              <div class="stop-popup-bus-identity">
+                <span class="route-badge-pill" style="background-color:${routeColor(t.name)}">${escapeHtml(t.name)}</span>
+                <strong class="stop-popup-bus-plate">${t.arrivalTime_veh_plate ? escapeHtml(t.arrivalTime_veh_plate) : 'Scheduled arrival'}</strong>
+              </div>
+              <span class="stop-popup-eta">${t.arrivalTime === 'Arr' ? 'Now' : `${t.arrivalTime} min`}</span>
             </div>
           </div>
         `).join('');
@@ -2086,8 +2183,13 @@ function setupVehicleDashboardInteractivity() {
         const val = meta.hourlyValues[hour];
         const count = meta.hourlyCounts[hour];
         const timeLabel = `${String(hour).padStart(2, '0')}:00 - ${String(hour).padStart(2, '0')}:59 SGT`;
+        const cap = bus ? numeric(bus.capacity) : null;
+        const estPax = val !== null && cap ? Math.round((val / 100) * cap) : null;
         hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
-          (val !== null ? `<div class="tooltip-row"><span style="color:${crowd(val).color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(val)}% (${count} reading${count === 1 ? '' : 's'})</span></div>` : `<div>No readings for ${escapeHtml(meta.plate)}</div>`);
+          (val !== null ? `<div class="tooltip-row"><span style="color:${crowd(val).color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(val)}% occupancy</span></div>` +
+            (estPax !== null ? `<div class="tooltip-row"><span>Est. Passenger Load</span><span>${estPax} / ${cap} pax</span></div>` : '') +
+            `<div class="tooltip-row"><span>Observations</span><span>${count} reading${count === 1 ? '' : 's'}</span></div>`
+          : `<div>No readings for ${escapeHtml(meta.plate)}</div>`);
         hourlyTooltip.style.display = 'block';
         positionChartTooltip(hourlyTooltip, hourlyCanvas, clientX, clientY);
       }

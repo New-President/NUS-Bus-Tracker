@@ -21,7 +21,8 @@ function canvasContext() {
     arc(x, y, radius) { records.dots.push({ x, y, radius }); },
     fill() {},
     fillText(text, x, y) { records.text.push({ text: String(text), x, y }); },
-    fillRect(x, y, width, height) { records.rectangles.push({ x, y, width, height }); }
+    fillRect(x, y, width, height) { records.rectangles.push({ x, y, width, height }); },
+    strokeRect(x, y, width, height) { records.rectangles.push({ stroke: true, x, y, width, height }); }
   };
   return ctx;
 }
@@ -1080,6 +1081,42 @@ test('per-bus-stop crowd data, progression cards, stop selection, and arrival po
   assert.ok(jumpBtn, 'Jump to analytics button exists');
   await jumpBtn.dispatch('click');
   assert.equal(ui.STATE.selectedTimelineVehicle, 'PC1234A', 'Jump to analytics sets selectedTimelineVehicle');
+});
+
+test('observed hourly occupancy and vehicle hourly charts display hover stats in tooltips', async () => {
+  const ui = dashboard();
+  ui.STATE.analytics = {
+    campusHourly: [
+      { hour: 8, avg_occupancy_pct: 64.2, avg_ridership: 38.5, sample_count: 15, occupancy_sample_count: 15, crowd_level: 'medium' },
+      { hour: 14, avg_occupancy_pct: 82.0, avg_ridership: 49.2, sample_count: 22, occupancy_sample_count: 22, crowd_level: 'high' }
+    ]
+  };
+
+  ui.renderHourlyBarChart();
+  const canvas = ui.sandbox.document.getElementById('hourlyBarChart');
+  const tooltip = ui.sandbox.document.getElementById('hourlyChartTooltip');
+  assert.ok(canvas, 'hourlyBarChart canvas exists');
+  assert.ok(tooltip, 'hourlyChartTooltip element exists');
+  assert.ok(canvas._hourlyMeta, 'canvas._hourlyMeta is populated');
+
+  ui.setupChartInteractivity();
+
+  // Simulate mousemove over hour 8
+  const meta = canvas._hourlyMeta;
+  const targetX = meta.left + 8 * meta.slotW + meta.slotW / 2;
+  await canvas.dispatch('mousemove', { clientX: targetX, clientY: 100 });
+
+  assert.equal(ui.STATE.campusHourlyHoveredIndex, 8, 'campusHourlyHoveredIndex should be hour 8');
+  assert.equal(tooltip.style.display, 'block', 'Tooltip should be visible');
+  assert.ok(tooltip.innerHTML.includes('08:00 - 08:59 SGT'), 'Tooltip should contain Singapore hour label');
+  assert.ok(tooltip.innerHTML.includes('64.2%'), 'Tooltip should contain occupancy percent');
+  assert.ok(tooltip.innerHTML.includes('38.5 pax / bus'), 'Tooltip should contain avg passenger load');
+  assert.ok(tooltip.innerHTML.includes('15 readings'), 'Tooltip should contain observation sample count');
+
+  // Simulate mouseleave
+  await canvas.dispatch('mouseleave');
+  assert.equal(ui.STATE.campusHourlyHoveredIndex, null, 'Hovered index resets on mouseleave');
+  assert.equal(tooltip.style.display, 'none', 'Tooltip hides on mouseleave');
 });
 
 

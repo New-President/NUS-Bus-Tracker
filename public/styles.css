@@ -22,6 +22,30 @@
   --radius-lg: 14px;
 }
 
+/* Custom Modern Dark Scrollbars across app */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
 [hidden] { display: none !important; }
 button:disabled, input:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #38bdf8; outline-offset: 3px; }
@@ -2431,111 +2455,234 @@ canvas {
   color: #64748b;
 }
 
+/* Leaflet Dark Popup Container Overrides */
+.leaflet-popup-content-wrapper {
+  background: #0d1526 !important;
+  color: #f1f5f9 !important;
+  border: 1px solid #273553 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.65) !important;
+  padding: 0 !important;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px !important;
+  line-height: 1.4 !important;
+}
+
+.leaflet-popup-tip {
+  background: #0d1526 !important;
+  border: 1px solid #273553 !important;
+  box-shadow: none !important;
+}
+
+.leaflet-container a.leaflet-popup-close-button {
+  color: #94a3b8 !important;
+  padding: 6px 10px 0 0 !important;
+  font-size: 18px !important;
+  font-weight: 700 !important;
+  text-decoration: none !important;
+}
+
+.leaflet-container a.leaflet-popup-close-button:hover {
+  color: #38bdf8 !important;
+}
+
 /* Map Bus Stop Popups */
 .map-popup-card.stop-popup {
-  min-width: 260px;
-  max-width: 340px;
+  width: 320px;
+  min-width: 290px;
+  max-width: 360px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  box-sizing: border-box;
 }
 
 .stop-popup-header {
-  border-bottom: 1px solid #334155;
-  padding-bottom: 6px;
+  border-bottom: 1px solid #1e293b;
+  padding-bottom: 8px;
+  padding-right: 22px;
 }
 
 .stop-popup-title {
-  font-size: 0.95rem;
+  font-size: 0.96rem;
   font-weight: 700;
   color: #f8fafc;
-  margin: 0;
+  margin: 0 0 6px 0;
+  letter-spacing: -0.01em;
 }
 
 .stop-popup-routes {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 4px;
+  gap: 5px;
+}
+
+.stop-popup-route-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #ffffff;
 }
 
 .stop-popup-buses {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-height: 240px;
+  gap: 8px;
+  max-height: 290px;
   overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}
+
+.stop-popup-buses::-webkit-scrollbar {
+  width: 5px;
+}
+
+.stop-popup-buses::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.stop-popup-buses::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 9999px;
+}
+
+.stop-popup-buses::-webkit-scrollbar-thumb:hover {
+  background: #475569;
 }
 
 .stop-popup-bus-row {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #131d33;
+  border-radius: 8px;
+  border: 1px solid #1e2d4a;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+  box-sizing: border-box;
+}
+
+.stop-popup-bus-row:hover {
+  border-color: #38bdf8;
+  background: #17233d;
+}
+
+.stop-popup-bus-top {
+  display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 8px;
-  background: #1e293b;
-  border-radius: 6px;
-  border: 1px solid #334155;
-  gap: 6px;
+  gap: 8px;
 }
 
-.stop-popup-bus-left {
+.stop-popup-bus-identity {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex-wrap: nowrap;
 }
 
-.stop-popup-bus-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
+.route-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #ffffff;
+  flex-shrink: 0;
 }
 
 .stop-popup-bus-plate {
   font-weight: 700;
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   color: #f1f5f9;
-}
-
-.stop-popup-bus-sub {
-  font-size: 0.72rem;
-  color: #94a3b8;
-}
-
-.stop-popup-bus-right {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-  flex-shrink: 0;
+  letter-spacing: 0.02em;
 }
 
 .stop-popup-eta {
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   font-weight: 700;
   color: #38bdf8;
+  flex-shrink: 0;
+}
+
+.stop-popup-eta.eta-now {
+  color: #34d399;
+}
+
+.stop-popup-bus-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.stop-popup-bus-metrics {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.stop-popup-pbar {
+  width: 42px;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.stop-popup-pfill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.stop-popup-pax {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  white-space: nowrap;
 }
 
 .stop-popup-inspect-btn {
   font-size: 0.7rem;
-  padding: 2px 6px;
+  font-weight: 600;
+  padding: 3px 8px;
   border-radius: 4px;
-  background: #334155;
-  color: #f8fafc;
-  border: none;
+  background: #1e293b;
+  color: #38bdf8;
+  border: 1px solid #334155;
   cursor: pointer;
-  margin-top: 2px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
 }
 
 .stop-popup-inspect-btn:hover {
   background: #38bdf8;
   color: #0f172a;
+  border-color: #38bdf8;
 }
 
 .stop-popup-empty {
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   color: #94a3b8;
-  padding: 6px 0;
+  padding: 10px 4px;
   text-align: center;
 }
 
