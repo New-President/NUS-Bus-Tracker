@@ -2455,6 +2455,61 @@ canvas {
   color: #64748b;
 }
 
+.stop-card-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.72rem;
+  padding-top: 2px;
+}
+
+.stop-card-time {
+  font-size: 0.68rem;
+  color: #64748b;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stop-card-time.is-live {
+  color: #34d399;
+  font-weight: 600;
+}
+
+.stop-card-time.is-unvisited {
+  color: #64748b;
+  font-style: italic;
+}
+
+.stop-card-set-btn {
+  background: transparent;
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  color: #94a3b8;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.stop-card-set-btn:hover {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: #38bdf8;
+  color: #38bdf8;
+  opacity: 1;
+}
+
+.badge-muted {
+  background: rgba(71, 85, 105, 0.25);
+  color: #94a3b8;
+  border: 1px solid rgba(71, 85, 105, 0.4);
+}
+
 /* Leaflet Dark Popup Container Overrides */
 .leaflet-popup-content-wrapper {
   background: #0d1526 !important;

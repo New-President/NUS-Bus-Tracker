@@ -229,6 +229,15 @@ export class RemoteBusDatabase {
     };
   }
 
+  async getVehicleSnapshots(vehplate, limit = 200) {
+    if (!vehplate || typeof vehplate !== 'string') return [];
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+    return (await this.rows(`
+      SELECT vehplate, lat, lng, speed, capacity, crowd_level, occupancy, ridership, timestamp, time_str, time_iso
+      FROM snapshots WHERE vehplate = ? ORDER BY timestamp DESC LIMIT ?
+    `, [vehplate.trim(), safeLimit])).map(row => ({ ...row }));
+  }
+
   async getAvailableDates() {
     return (await this.rows(`
       SELECT DISTINCT date(timestamp / 1000, 'unixepoch', '+8 hours') AS date

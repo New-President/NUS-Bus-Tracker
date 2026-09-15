@@ -58,6 +58,39 @@ function formatTime(value, includeDate = false) {
     ...(includeDate ? { day: '2-digit', month: 'short' } : {})
   }).format(date);
 }
+function formatTimeAgo(timestamp) {
+  if (!timestamp || typeof timestamp !== 'number') return '';
+  const diffSec = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (diffSec < 60) return 'Just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return `${Math.floor(diffHours / 24)}d ago`;
+}
+
+function loadStopCrowdStorage() {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('nus_bus_stop_crowd_v1') : null;
+    if (!raw) return { byVehicle: {}, byRoute: {} };
+    const parsed = JSON.parse(raw);
+    return {
+      byVehicle: parsed && typeof parsed.byVehicle === 'object' && parsed.byVehicle !== null ? parsed.byVehicle : {},
+      byRoute: parsed && typeof parsed.byRoute === 'object' && parsed.byRoute !== null ? parsed.byRoute : {}
+    };
+  } catch {
+    return { byVehicle: {}, byRoute: {} };
+  }
+}
+
+function saveStopCrowdStorage() {
+  try {
+    if (typeof localStorage !== 'undefined' && STATE.stopCrowdStorage) {
+      localStorage.setItem('nus_bus_stop_crowd_v1', JSON.stringify(STATE.stopCrowdStorage));
+    }
+  } catch {}
+}
+
 const hourRange = hour => `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`;
 const STATE = {
   currentTab: 'tab-24h', currentView: 'exact', smoothing: 'smoothed', timeMode: 'rolling', selectedDate: formatLocalDate(),
@@ -68,6 +101,7 @@ const STATE = {
   selectedMapStop: 'all', selectedTimelineVehicle: 'all', stopArrivalCache: new Map(),
   leafletMap: null, busMarkers: new Map(), stopMarkers: [], routeTraceGroup: null, tracedRoute: 'all', hoveredIndex: null, campusHourlyHoveredIndex: null,
   selectedVehiclePlate: null, vehicleDetailMap: null, vehicleDetailMetric: 'crowd', vehicleMarker: null, vehicleRouteTraceGroup: null, vehicleHoveredIndex: null, vehicleHourlyHoveredIndex: null,
+  stopCrowdStorage: loadStopCrowdStorage(), vehicleSnapshotsCache: new Map(),
   refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: ''
 };
 const ROUTE_COLORS = { CAMPUS_AVG: '#38bdf8', A1: '#FB0101', A2: '#FBAE17', D1: '#9E005D', D2: '#6A1B9A', E: '#00838F', K: '#2E7D32', R1: '#10B981', R2: '#8B5CF6' };
@@ -185,6 +219,7 @@ async function refreshAllData() {
       }),
       fetchHistory24h()
     ]);
+    updateLiveStopsCrowdReadings(STATE.liveBuses);
     renderAll();
   })().finally(() => { STATE.refreshPromise = null; });
   return STATE.refreshPromise;
@@ -1265,6 +1300,167 @@ function updateTimelineVehicleDropdown() {
   select.value = STATE.selectedTimelineVehicle;
 }
 
+function recordVehicleStopCrowd(bus, stopCode, stopName, customData = null) {
+  if (!bus || !stopCode) return;
+  const plate = bus.vehplate;
+  const route = bus.route_code;
+  const cap = numeric(bus.capacity) || 88;
+
+  let ridership, occVal, crowdLvl;
+  if (customData) {
+    ridership = customData.ridership;
+    occVal = cap > 0 ? ridership / cap : 0;
+    crowdLvl = customData.crowdLevel || crowd(occVal * 100);
+  } else {
+    ridership = numeric(bus.ridership);
+    occVal = numeric(bus.occupancy);
+    if (occVal === null && ridership !== null && cap > 0) occVal = ridership / cap;
+    crowdLvl = busCrowd({ ridership, occupancy: occVal, capacity: cap });
+  }
+
+  if (ridership === null && occVal === null) return;
+
+  const entry = {
+    stopCode,
+    stopName: stopName || stopCode,
+    ridership: ridership ?? Math.round(occVal * cap),
+    occupancy: occVal ?? (cap > 0 ? ridership / cap : 0),
+    capacity: cap,
+    crowdLevel: crowdLvl,
+    timestamp: Date.now(),
+    vehplate: plate,
+    routeCode: route,
+    isManual: Boolean(customData?.isManual)
+  };
+
+  if (!STATE.stopCrowdStorage.byVehicle[plate]) {
+    STATE.stopCrowdStorage.byVehicle[plate] = {};
+  }
+  STATE.stopCrowdStorage.byVehicle[plate][stopCode] = entry;
+
+  if (route) {
+    if (!STATE.stopCrowdStorage.byRoute[route]) {
+      STATE.stopCrowdStorage.byRoute[route] = {};
+    }
+    STATE.stopCrowdStorage.byRoute[route][stopCode] = entry;
+  }
+
+  saveStopCrowdStorage();
+}
+
+function updateLiveStopsCrowdReadings(buses) {
+  if (!Array.isArray(buses) || !buses.length) return;
+  for (const bus of buses) {
+    if (!hasCoordinates(bus)) continue;
+    const routeCode = bus.route_code;
+    const orderedCodes = NUS_ORDERED_ROUTE_STOPS[routeCode];
+    if (!orderedCodes) continue;
+
+    for (const code of orderedCodes) {
+      const stop = getStopByCodeOrName(code);
+      if (!stop) continue;
+      const dist = getDistanceToStop(bus.lat, bus.lng, stop.lat, stop.lng);
+      if (dist <= 180) {
+        recordVehicleStopCrowd(bus, code, stop.name);
+      }
+    }
+  }
+}
+
+async function fetchVehicleSnapshots(vehplate, routeCode) {
+  if (!vehplate) return;
+  try {
+    const data = await requestJson(`/api/history/vehicle-snapshots?plate=${encodeURIComponent(vehplate)}&limit=250`);
+    if (!data || !Array.isArray(data.snapshots)) return;
+    processSnapshotsIntoStopCrowd(vehplate, routeCode, data.snapshots);
+  } catch {}
+}
+
+function processSnapshotsIntoStopCrowd(vehplate, routeCode, snapshots) {
+  const orderedCodes = NUS_ORDERED_ROUTE_STOPS[routeCode];
+  if (!orderedCodes || !Array.isArray(snapshots) || !snapshots.length) return;
+
+  let changed = false;
+  // Sort newest first
+  const sorted = [...snapshots].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  for (const code of orderedCodes) {
+    const stop = getStopByCodeOrName(code);
+    if (!stop || typeof stop.lat !== 'number' || typeof stop.lng !== 'number') continue;
+
+    for (const snap of sorted) {
+      if (typeof snap.lat !== 'number' || typeof snap.lng !== 'number') continue;
+      const dist = getDistanceToStop(snap.lat, snap.lng, stop.lat, stop.lng);
+      if (dist <= 180) {
+        const cap = snap.capacity || 88;
+        const ridership = numeric(snap.ridership);
+        let occVal = numeric(snap.occupancy);
+        if (occVal === null && ridership !== null && cap > 0) occVal = ridership / cap;
+        if (ridership !== null || occVal !== null) {
+          const existing = STATE.stopCrowdStorage.byVehicle[vehplate]?.[code];
+          if (!existing || (snap.timestamp && snap.timestamp > existing.timestamp && !existing.isManual)) {
+            const crowdLvl = busCrowd({ ridership, occupancy: occVal, capacity: cap });
+            const entry = {
+              stopCode: code,
+              stopName: stop.name || code,
+              ridership: ridership ?? Math.round(occVal * cap),
+              occupancy: occVal ?? (cap > 0 ? ridership / cap : 0),
+              capacity: cap,
+              crowdLevel: crowdLvl,
+              timestamp: snap.timestamp || Date.now(),
+              vehplate,
+              routeCode,
+              distance: Math.round(dist)
+            };
+            if (!STATE.stopCrowdStorage.byVehicle[vehplate]) STATE.stopCrowdStorage.byVehicle[vehplate] = {};
+            STATE.stopCrowdStorage.byVehicle[vehplate][code] = entry;
+            if (routeCode) {
+              if (!STATE.stopCrowdStorage.byRoute[routeCode]) STATE.stopCrowdStorage.byRoute[routeCode] = {};
+              const existingRoute = STATE.stopCrowdStorage.byRoute[routeCode][code];
+              if (!existingRoute || snap.timestamp > existingRoute.timestamp) {
+                STATE.stopCrowdStorage.byRoute[routeCode][code] = entry;
+              }
+            }
+            changed = true;
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  if (changed) {
+    saveStopCrowdStorage();
+    if (STATE.selectedVehiclePlate === vehplate) {
+      const bus = STATE.allFleet.find(b => b.vehplate === vehplate) || STATE.liveBuses.find(b => b.vehplate === vehplate);
+      if (bus) renderVehicleStopProgression(bus);
+    }
+  }
+}
+
+function promptSetStopCrowd(vehplate, stopCode, stopName, capacity = 88) {
+  const current = STATE.stopCrowdStorage.byVehicle[vehplate]?.[stopCode];
+  const defVal = current ? current.ridership : '';
+  const input = typeof window !== 'undefined' && typeof window.prompt === 'function'
+    ? window.prompt(`Set crowd reading at ${stopName} for bus ${vehplate}:\nEnter passenger count (0 - ${capacity}):`, defVal)
+    : null;
+  if (input === null) return;
+  const parsed = Number(String(input).trim());
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > capacity * 1.5) {
+    if (typeof alert === 'function') alert(`Please enter a valid passenger count between 0 and ${capacity}.`);
+    return;
+  }
+  const bus = STATE.allFleet.find(b => b.vehplate === vehplate) ||
+              STATE.liveBuses.find(b => b.vehplate === vehplate) ||
+              { vehplate, route_code: current?.routeCode || '', capacity };
+  recordVehicleStopCrowd(bus, stopCode, stopName, { ridership: Math.round(parsed), isManual: true });
+  if (STATE.selectedVehiclePlate === vehplate) {
+    renderVehicleStopProgression(bus);
+  }
+}
+const globalRoot = typeof window !== 'undefined' ? window : globalThis;
+globalRoot.promptSetStopCrowd = promptSetStopCrowd;
+
 function renderVehicleStopProgression(bus) {
   const container = $('vehicleStopProgressionList');
   if (!container) return;
@@ -1300,13 +1496,23 @@ function renderVehicleStopProgression(bus) {
       isApproaching = dist > 180 && dist <= 500;
     }
 
+    if (isAtStop) {
+      recordVehicleStopCrowd(bus, code, stopName);
+    }
+
+    const vehicleReading = STATE.stopCrowdStorage.byVehicle[bus?.vehplate]?.[code];
+    const routeReading = STATE.stopCrowdStorage.byRoute[routeCode]?.[code];
+    const reading = vehicleReading || (isAtStop ? null : routeReading);
+
     return {
       index: index + 1,
       code,
       name: stopName,
       dist,
       isAtStop,
-      isApproaching
+      isApproaching,
+      reading,
+      isVehicleSpecific: Boolean(vehicleReading)
     };
   });
 
@@ -1316,8 +1522,7 @@ function renderVehicleStopProgression(bus) {
     setText('vehicleStopsCurrentNearest', 'Nearest: Location unknown');
   }
 
-  const pct = occupancy(bus);
-  const lvl = busCrowd(bus);
+  const busCap = numeric(bus?.capacity) || 88;
 
   container.innerHTML = stopsData.map(s => {
     let cardClass = 'stop-progression-card';
@@ -1333,6 +1538,32 @@ function renderVehicleStopProgression(bus) {
 
     const distLabel = Number.isFinite(s.dist) && s.dist < 50000 ? `${Math.round(s.dist)}m away` : '';
 
+    let crowdBadgeHtml;
+    let paxHtml;
+    let timeLabelHtml;
+
+    if (s.isAtStop) {
+      const pct = occupancy(bus);
+      const lvl = busCrowd(bus);
+      crowdBadgeHtml = `<span class="badge ${lvl.badge}" style="font-size:0.7rem">${lvl.label} (${percentLabel(pct)})</span>`;
+      paxHtml = `<span>${numberLabel(bus?.ridership)} / ${numberLabel(bus?.capacity || busCap)} pax</span>`;
+      timeLabelHtml = `<span class="stop-card-time is-live">Live at stop · Updated now</span>`;
+    } else if (s.reading) {
+      const r = s.reading;
+      const lvl = r.crowdLevel || crowd(r.occupancy * 100);
+      const pct = r.occupancy * 100;
+      const timeText = s.isVehicleSpecific
+        ? `Recorded ${formatTimeAgo(r.timestamp)}`
+        : `Route obs. · ${formatTimeAgo(r.timestamp)}`;
+      crowdBadgeHtml = `<span class="badge ${lvl.badge}" style="font-size:0.7rem">${lvl.label} (${percentLabel(pct)})</span>`;
+      paxHtml = `<span>${numberLabel(r.ridership)} / ${numberLabel(r.capacity || busCap)} pax</span>`;
+      timeLabelHtml = `<span class="stop-card-time" title="${formatTime(r.timestamp, true)} SGT">${escapeHtml(timeText)}</span>`;
+    } else {
+      crowdBadgeHtml = `<span class="badge badge-muted" style="font-size:0.7rem">Awaiting stop</span>`;
+      paxHtml = `<span>-- / ${numberLabel(bus?.capacity || busCap)} pax</span>`;
+      timeLabelHtml = `<span class="stop-card-time is-unvisited">No reading at stop yet</span>`;
+    }
+
     return `
       <div class="${cardClass}" role="listitem">
         <div class="stop-card-header">
@@ -1344,10 +1575,14 @@ function renderVehicleStopProgression(bus) {
         </div>
         <div class="stop-card-telemetry">
           <div class="stop-card-crowd-strip">
-            <span class="badge ${lvl.badge}" style="font-size:0.7rem">${lvl.label} (${percentLabel(pct)})</span>
-            <span>${numberLabel(bus.ridership)} / ${numberLabel(bus.capacity)} pax</span>
+            ${crowdBadgeHtml}
+            ${paxHtml}
           </div>
           ${distLabel ? `<span class="stop-card-dist">${distLabel}</span>` : ''}
+        </div>
+        <div class="stop-card-meta-row">
+          ${timeLabelHtml}
+          <button type="button" class="stop-card-set-btn" title="Set crowd data for ${escapeHtml(s.name)}" onclick="promptSetStopCrowd('${escapeHtml(bus?.vehplate || '')}', '${escapeHtml(s.code)}', '${escapeHtml(s.name)}', ${busCap})">✎ Set</button>
         </div>
       </div>
     `;
@@ -1627,6 +1862,7 @@ function openVehicleDashboard(vehplate) {
   renderVehicleDetailChart(bus);
   renderVehicleHourlyBarChart(bus);
   renderVehicleStopProgression(bus);
+  fetchVehicleSnapshots(bus.vehplate, bus.route_code);
 }
 
 function closeVehicleDashboard() {

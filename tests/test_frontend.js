@@ -175,7 +175,9 @@ function dashboard() {
     smoothSeries, inactiveReason, nearestTerminal, positionChartTooltip,
     getDistanceToStop, getServicedRoutesForStop, isBusApproachingOrAtStop,
     getBusesNearStop, renderStopPopupHtml, renderVehicleStopProgression,
-    updateMapStopSelectDropdown, updateTimelineVehicleDropdown, fetchStopEtas
+    updateMapStopSelectDropdown, updateTimelineVehicleDropdown, fetchStopEtas,
+    promptSetStopCrowd, recordVehicleStopCrowd, updateLiveStopsCrowdReadings,
+    processSnapshotsIntoStopCrowd
   };`, sandbox, { filename: 'public/app.js' });
   return {
     ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
@@ -1117,6 +1119,101 @@ test('observed hourly occupancy and vehicle hourly charts display hover stats in
   await canvas.dispatch('mouseleave');
   assert.equal(ui.STATE.campusHourlyHoveredIndex, null, 'Hovered index resets on mouseleave');
   assert.equal(tooltip.style.display, 'none', 'Tooltip hides on mouseleave');
+});
+
+test('vehicle route progression shows distinct per-stop crowd data, updates when at stop, and updates on revisit', async () => {
+  const ui = dashboard();
+  const utownStop = { name: 'University Town (UTown)', code: 'UTOWN', lat: 1.303781, lng: 103.774431 };
+  const yihStop = { name: 'Yusof Ishak House (YIH)', code: 'YIH', lat: 1.298885, lng: 103.774377 };
+  const clbStop = { name: 'Central Library (CLB)', code: 'CLB', lat: 1.296544, lng: 103.772569 };
+
+  // 1. Bus initially at UTown with 80 pax
+  const busAtUtown = {
+    vehplate: 'PC9999Z',
+    route_code: 'D1',
+    lat: utownStop.lat,
+    lng: utownStop.lng,
+    ridership: 80,
+    occupancy: 0.91,
+    capacity: 88,
+    speed: 0
+  };
+
+  ui.STATE.allFleet = [busAtUtown];
+  ui.STATE.liveBuses = [busAtUtown];
+  ui.renderVehicleStopProgression(busAtUtown);
+
+  const progList = ui.sandbox.document.getElementById('vehicleStopProgressionList');
+  assert.ok(progList.innerHTML.includes('📍 At Stop'), 'UTown displays At Stop badge');
+  assert.ok(progList.innerHTML.includes('80 / 88 pax'), 'UTown displays 80 pax');
+  assert.ok(progList.innerHTML.includes('Live at stop · Updated now'), 'UTown displays Live at stop label');
+  assert.ok(progList.innerHTML.includes('Awaiting stop'), 'Unvisited stops show awaiting stop badge');
+  assert.ok(progList.innerHTML.includes('-- / 88 pax'), 'Unvisited stops show placeholder pax');
+
+  // Verify UTown was recorded in storage
+  assert.equal(ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']?.['UTOWN']?.ridership, 80);
+
+  // 2. Bus moves to YIH with 65 pax (passenger drop-off/board)
+  const busAtYih = {
+    ...busAtUtown,
+    lat: yihStop.lat,
+    lng: yihStop.lng,
+    ridership: 65,
+    occupancy: 0.74
+  };
+
+  ui.STATE.liveBuses = [busAtYih];
+  ui.renderVehicleStopProgression(busAtYih);
+
+  // Both stops now have DISTINCT crowd data!
+  assert.ok(progList.innerHTML.includes('65 / 88 pax'), 'YIH displays 65 pax live at stop');
+  assert.ok(progList.innerHTML.includes('80 / 88 pax'), 'UTown retains its distinct recorded 80 pax');
+  assert.equal(ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']?.['YIH']?.ridership, 65);
+  assert.equal(ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']?.['UTOWN']?.ridership, 80);
+
+  // 3. Bus loops around and revisits UTown with 42 pax
+  const busRevisitUtown = {
+    ...busAtUtown,
+    lat: utownStop.lat,
+    lng: utownStop.lng,
+    ridership: 42,
+    occupancy: 0.48
+  };
+
+  ui.STATE.liveBuses = [busRevisitUtown];
+  ui.renderVehicleStopProgression(busRevisitUtown);
+
+  // UTown is updated with the new 42 pax observation!
+  assert.equal(ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']?.['UTOWN']?.ridership, 42);
+  assert.ok(progList.innerHTML.includes('42 / 88 pax'), 'UTown is updated with new 42 pax on revisit');
+  assert.ok(progList.innerHTML.includes('65 / 88 pax'), 'YIH retains its 65 pax from previous stop');
+
+  // 4. Manual set via promptSetStopCrowd
+  ui.sandbox.window.prompt = () => '25';
+  ui.promptSetStopCrowd('PC9999Z', 'CLB', 'Central Library (CLB)', 88);
+  assert.equal(ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']?.['CLB']?.ridership, 25);
+  assert.equal(ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']?.['CLB']?.isManual, true);
+
+  ui.renderVehicleStopProgression(busRevisitUtown);
+  assert.ok(progList.innerHTML.includes('25 / 88 pax'), 'CLB reflects manually calibrated 25 pax');
+
+  // 5. Historical snapshots reconstruction
+  const mockSnapshots = [
+    {
+      vehplate: 'PC9999Z',
+      route_code: 'D1',
+      lat: clbStop.lat,
+      lng: clbStop.lng,
+      ridership: 55,
+      occupancy: 0.62,
+      capacity: 88,
+      timestamp: Date.now() + 10000
+    }
+  ];
+  // Clear manual flag and process
+  delete ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']['CLB'];
+  ui.processSnapshotsIntoStopCrowd('PC9999Z', 'D1', mockSnapshots);
+  assert.equal(ui.STATE.stopCrowdStorage.byVehicle['PC9999Z']?.['CLB']?.ridership, 55, 'Snapshot reconstructs CLB reading');
 });
 
 

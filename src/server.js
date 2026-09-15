@@ -12,6 +12,7 @@ const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const DAY_MS = 86400000;
 const API_METHODS = {
   '/api/status': 'GET', '/api/live': 'GET', '/api/history/24h': 'GET',
+  '/api/history/vehicle-snapshots': 'GET',
   '/api/analytics/optimize': 'GET', '/api/export': 'GET', '/api/cron': 'GET',
   '/api/poll-now': 'POST', '/api/settings': 'POST', '/api/clear-all': 'POST'
 };
@@ -170,6 +171,13 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
         return sendJson(res, 200, { mode, selectedDate, currentTime: now, timeZone: 'Asia/Singapore',
           queryRange: { start, end, effectiveEnd, startIso: new Date(start).toISOString(), endIso: new Date(end).toISOString() },
           ...history, dataSources, availableDates, routes: NUS_ROUTES });
+      }
+      if (pathname === '/api/history/vehicle-snapshots') {
+        const plate = url.searchParams.get('plate');
+        if (!plate) throw new RequestError(400, 'plate parameter is required.');
+        const limit = url.searchParams.get('limit') || 200;
+        const snapshots = await db.getVehicleSnapshots(plate, limit);
+        return sendJson(res, 200, { vehplate: plate, count: snapshots.length, snapshots });
       }
       if (pathname === '/api/analytics/optimize') {
         const [analytics, dataSources] = await Promise.all([

@@ -367,3 +367,21 @@ test('database errors identify Turso failures without exposing driver details', 
     assert.doesNotMatch(res.data, /private-token|private.example|secret SQL/);
   }
 });
+
+test('GET /api/history/vehicle-snapshots returns recent snapshots for vehicle', async t => {
+  const { request, db } = await fixture(t);
+  const now = Date.now();
+  await db.recordPoll([
+    normalizeBus({ vehplate: 'PC7777A', lat: 1.3037, lng: 103.7744, loadInfo: { ridership: 20, capacity: 88 } }, 'D1', now)
+  ], now);
+
+  const resEmpty = await request('/api/history/vehicle-snapshots');
+  assert.equal(resEmpty.status, 400);
+
+  const res = await request('/api/history/vehicle-snapshots?plate=PC7777A&limit=10');
+  assert.equal(res.status, 200);
+  assert.equal(res.json.vehplate, 'PC7777A');
+  assert.equal(res.json.count, 1);
+  assert.equal(res.json.snapshots[0].vehplate, 'PC7777A');
+  assert.equal(res.json.snapshots[0].ridership, 20);
+});
