@@ -180,7 +180,12 @@ function dashboard() {
     promptSetStopCrowd, recordVehicleStopCrowd, updateLiveStopsCrowdReadings,
     processSnapshotsIntoStopCrowd, calculateBearing, angleDifference, getVehicleBearing,
     updateVehicleMovement, resolveVehicleRouteProgression,
-    navigateTimeline, zoomTimeline, resetTimelineZoom, getCachedTimelineSeries
+    navigateTimeline, zoomTimeline, resetTimelineZoom, getCachedTimelineSeries,
+    computeRouteHeadways, computeAllRouteHeadways, computeVehicleDutyCycle,
+    getVehicleDutySummary, analyzeVehicleCycles, getStopDwellAndExchangeForVehicle,
+    computeStopBottlenecksAndCorridors, detectLectureSurgeWindows,
+    extractDwellSessionsFromSnapshots,
+    renderOptimizerView, renderTransitInsights
   };`, sandbox, { filename: 'public/app.js' });
   return {
     ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
@@ -1489,4 +1494,213 @@ test('timeline series caching memoizes repeated renders and fast smoothing optim
   assert.equal(typeof smoothed[5], 'number');
   assert.equal(Math.round(smoothed[5] * 10) / 10, smoothed[5]);
 });
+
+test('computeRouteHeadways detects normal headway vs bunching below 2.5 min threshold', () => {
+  const ui = dashboard();
+
+  // Test 1: Two buses well spaced along A1 loop
+  // PGP (1.2917, 103.7804) and CLB (1.2965, 103.7725)
+  const bus1 = bus({ vehplate: 'PC1001A', route_code: 'A1', lat: 1.291765, lng: 103.780419, speed: 20 });
+  const bus2 = bus({ vehplate: 'PC1002B', route_code: 'A1', lat: 1.296534, lng: 103.772545, speed: 20 });
+
+  const resultSpaced = ui.computeRouteHeadways([bus1, bus2], 'A1');
+  assert.equal(resultSpaced.routeCode, 'A1');
+  assert.equal(resultSpaced.buses.length, 2);
+  assert.equal(resultSpaced.hasBunching, false, 'Well-spaced buses should not be flagged as bunched');
+  assert.ok(resultSpaced.pairs.length >= 1);
+  assert.ok(resultSpaced.pairs[0].timeGapMin >= 2.5);
+
+  // Test 2: Two buses closely following each other (< 1.5 min / < 250m)
+  const bunchedBus1 = bus({ vehplate: 'PC2001X', route_code: 'A1', lat: 1.29482, lng: 103.78441, speed: 15 }); // KR-MRT
+  const bunchedBus2 = bus({ vehplate: 'PC2002Y', route_code: 'A1', lat: 1.29490, lng: 103.78450, speed: 15 }); // Right behind at KR-MRT
+
+  const resultBunched = ui.computeRouteHeadways([bunchedBus1, bunchedBus2], 'A1');
+  assert.equal(resultBunched.hasBunching, true, 'Buses right behind each other must trigger bunching alert');
+  assert.ok(resultBunched.bunchedPlates.size > 0);
+});
+
+test('computeVehicleDutyCycle categorizes full-day workhorse vs peak booster and measures sequential Haversine mileage', () => {
+  const ui = dashboard();
+
+  // Simulate 500 snapshots (~8.3 hours of 1-minute telemetry)
+  const fullDaySnaps = [];
+  let baseLat = 1.2917;
+  let baseLng = 103.7804;
+  const startTs = NOW - 500 * 60000;
+
+  for (let i = 0; i < 500; i++) {
+    // Add small movement
+    baseLat += (i % 2 === 0 ? 0.0005 : -0.0004);
+    baseLng += (i % 2 === 0 ? 0.0004 : -0.0003);
+    fullDaySnaps.push({
+      timestamp: startTs + i * 60000,
+      lat: baseLat,
+      lng: baseLng,
+      speed: 18,
+      ridership: 25,
+      occupancy: 0.35
+    });
+  }
+
+  const fullDay = ui.computeVehicleDutyCycle(fullDaySnaps, 'PC-FULLDAY');
+  assert.equal(fullDay.profile, 'Full-Day Workhorse');
+  assert.equal(fullDay.badgeClass, 'badge-duty-full-day');
+  assert.equal(fullDay.activeMinutes, 500);
+  assert.ok(fullDay.distanceKm > 5, 'Calculates non-zero cumulative Haversine distance');
+
+  // Simulate peak-only booster: 120 snapshots during morning peak (08:00 - 10:00 SGT)
+  // Singapore 08:00 SGT is 00:00 UTC
+  const morningPeakDate = new Date(Date.UTC(2026, 8, 17, 0, 30, 0)); // 08:30 SGT
+  const peakSnaps = [];
+  for (let i = 0; i < 120; i++) {
+    peakSnaps.push({
+      timestamp: morningPeakDate.getTime() + i * 60000,
+      lat: 1.2917 + i * 0.0001,
+      lng: 103.7804 + i * 0.0001,
+      speed: 22,
+      ridership: 45,
+      occupancy: 0.6
+    });
+  }
+
+  const peakBooster = ui.computeVehicleDutyCycle(peakSnaps, 'PC-PEAK');
+  assert.equal(peakBooster.profile, 'Peak Booster');
+  assert.equal(peakBooster.badgeClass, 'badge-duty-booster');
+  assert.equal(peakBooster.activeMinutes, 120);
+});
+
+test('analyzeVehicleCycles detects loop completions, average cycle time, and terminal layovers', () => {
+  const ui = dashboard();
+
+  // Route A1 terminal: PGP (1.291765, 103.780419)
+  const termLat = 1.291765;
+  const termLng = 103.780419;
+  const snaps = [];
+  let t = NOW - 120 * 60000;
+
+  // Visit 1 at PGP terminal (rest 6 min)
+  for (let i = 0; i < 6; i++) {
+    snaps.push({ timestamp: t, lat: termLat, lng: termLng, speed: 0 });
+    t += 60000;
+  }
+  // Drive loop around campus (24 min)
+  for (let i = 0; i < 24; i++) {
+    snaps.push({ timestamp: t, lat: 1.2965, lng: 103.7725, speed: 20 });
+    t += 60000;
+  }
+  // Visit 2 at PGP terminal (rest 6 min)
+  for (let i = 0; i < 6; i++) {
+    snaps.push({ timestamp: t, lat: termLat, lng: termLng, speed: 0 });
+    t += 60000;
+  }
+  // Drive loop around campus (24 min)
+  for (let i = 0; i < 24; i++) {
+    snaps.push({ timestamp: t, lat: 1.2965, lng: 103.7725, speed: 20 });
+    t += 60000;
+  }
+  // Visit 3 at PGP terminal
+  for (let i = 0; i < 6; i++) {
+    snaps.push({ timestamp: t, lat: termLat, lng: termLng, speed: 0 });
+    t += 60000;
+  }
+
+  const cycleInfo = ui.analyzeVehicleCycles(snaps, 'A1');
+  assert.ok(cycleInfo.loopCount >= 2, 'Detects completed loops between terminal visits');
+  assert.ok(cycleInfo.avgLoopMin >= 20 && cycleInfo.avgLoopMin <= 30, 'Detects loop cycle duration around ~24m');
+  assert.ok(cycleInfo.avgLayoverMin >= 4 && cycleInfo.avgLayoverMin <= 8, 'Detects average layover rest around ~6m');
+});
+
+test('getStopDwellAndExchangeForVehicle extracts stationary dwell durations and boarding deltas', () => {
+  const ui = dashboard();
+
+  // Simulate vehicle stopping at CLB stop (code 'CLB', lat 1.296534, lng 103.772545)
+  // 3 consecutive 1-minute snapshots with speed = 0, ridership increasing from 20 to 52
+  const dwellSnaps = [
+    { timestamp: NOW - 180000, lat: 1.296534, lng: 103.772545, speed: 0, ridership: 20 },
+    { timestamp: NOW - 120000, lat: 1.296534, lng: 103.772545, speed: 0, ridership: 40 },
+    { timestamp: NOW - 60000, lat: 1.296534, lng: 103.772545, speed: 0, ridership: 52 }
+  ];
+
+  const dwellInfo = ui.getStopDwellAndExchangeForVehicle(dwellSnaps, 'CLB');
+  assert.ok(dwellInfo);
+  assert.equal(dwellInfo.dwellMin, 3, 'Calculates 3 minutes dwell duration');
+  assert.equal(dwellInfo.deltaPax, 32, 'Calculates +32 net boarding passenger exchange');
+});
+
+test('renderMapHeadwaysAndTraffic and renderFleetGrid render headway pills, bunching badges, and duty profiles', () => {
+  const ui = dashboard();
+
+  // Create two bunched buses on A1
+  const b1 = bus({ vehplate: 'PC9001A', route_code: 'A1', lat: 1.29482, lng: 103.78441, speed: 10 });
+  const b2 = bus({ vehplate: 'PC9002B', route_code: 'A1', lat: 1.29490, lng: 103.78450, speed: 10 });
+  reportedFleet(ui, [b1, b2]);
+
+  // Render fleet grid
+  ui.renderFleetGrid();
+  const fleetHtml = ui.element('fleetGrid').innerHTML;
+  assert.ok(fleetHtml.includes('badge-bunched'), 'Fleet card contains bunching warning badge');
+  assert.ok(fleetHtml.includes('Today:'), 'Fleet card includes daily operating telemetry');
+
+  // Render map headway bar
+  ui.initLeafletMap();
+  ui.renderMapBuses();
+  const headwayHtml = ui.element('mapHeadwayBar').innerHTML;
+  assert.ok(headwayHtml.includes('headway-route-group'), 'Map headway strip renders route group');
+  assert.ok(headwayHtml.includes('PC9001A'));
+  assert.ok(headwayHtml.includes('PC9002B'));
+  assert.ok(headwayHtml.includes('is-bunched'), 'Map headway pill highlights bunched pair in amber/red');
+
+  // Check map traffic index badge
+  const trafficBadge = ui.element('mapTrafficIndexBadge');
+  assert.ok(trafficBadge.textContent.includes('Traffic'));
+});
+
+test('renderTransitInsights renders stop dwell leaderboard, corridor travel times, and lecture transition waves', () => {
+  const ui = dashboard();
+
+  // Call renderOptimizerView which invokes renderTransitInsights
+  ui.renderOptimizerView();
+
+  const leaderboardHtml = ui.element('stopDwellLeaderboard').innerHTML;
+  assert.ok(leaderboardHtml.includes('Central Library (CLB)'), 'Leaderboard includes top dwell stop');
+  assert.ok(leaderboardHtml.includes('Avg Stop Dwell'), 'Leaderboard shows dwell metrics');
+
+  const segmentsHtml = ui.element('segmentTravelTimesList').innerHTML;
+  assert.ok(segmentsHtml.includes('Prince George'), 'Corridors list includes key campus segment');
+  assert.ok(segmentsHtml.includes('Baseline:'), 'Corridors list compares baseline with observed timing');
+
+  const surgeHtml = ui.element('lectureSurgeContainer').innerHTML;
+  assert.ok(surgeHtml.includes('Morning Lecture Rush'), 'Lecture transition surges include morning wave');
+  assert.ok(surgeHtml.includes('Commuter Tip:'), 'Includes commuter actionable boarding tip');
+});
+
+test('stop dwell leaderboard dynamically adapts to incoming live dwell sessions and snapshot history', () => {
+  const ui = dashboard();
+
+  // Initially baseline ranking
+  const initial = ui.computeStopBottlenecksAndCorridors();
+  assert.strictEqual(initial.topStops[0].code, 'CLB', 'CLB is top stop by baseline');
+
+  // Simulate heavy surge dwell sessions observed at Computing COM3
+  ui.STATE.stopDwellSessions.push(
+    { stopCode: 'COM3', dwellSec: 320, deltaPax: 75, timestamp: NOW - 60000, vehplate: 'PC1001A' },
+    { stopCode: 'COM3', dwellSec: 290, deltaPax: 80, timestamp: NOW - 120000, vehplate: 'PC1002B' },
+    { stopCode: 'COM3', dwellSec: 310, deltaPax: 68, timestamp: NOW - 180000, vehplate: 'PC1003C' },
+    { stopCode: 'COM3', dwellSec: 300, deltaPax: 72, timestamp: NOW - 240000, vehplate: 'PC1004D' },
+    { stopCode: 'COM3', dwellSec: 305, deltaPax: 70, timestamp: NOW - 300000, vehplate: 'PC1005E' }
+  );
+
+  const updated = ui.computeStopBottlenecksAndCorridors();
+  assert.strictEqual(updated.topStops[0].code, 'COM3', 'COM3 dynamically vaults to rank #1 due to observed dwell bottlenecks');
+  assert.ok(updated.topStops[0].avgDwellSec >= 280, 'Dynamic average dwell reflects empirical observations');
+  assert.strictEqual(updated.topStops[0].severity, 'Severe Dwell', 'Severity dynamically updates to Severe Dwell');
+
+  // Verify UI re-render reflects the dynamic update
+  ui.renderTransitInsights();
+  const leaderboardHtml = ui.element('stopDwellLeaderboard').innerHTML;
+  assert.ok(leaderboardHtml.includes('Computing (COM 3)'), 'Rendered UI reflects dynamic top bottleneck stop');
+  assert.ok(leaderboardHtml.includes('#1'), 'Rank 1 badge rendered');
+});
+
+
 

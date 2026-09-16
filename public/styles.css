@@ -2822,3 +2822,300 @@ canvas {
   gap: 6px;
 }
 
+/* ==========================================================================
+   1-Minute Live Headway & Bus Bunching Strip
+   ========================================================================== */
+.map-headway-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 8px 12px;
+  margin-top: 8px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.headway-route-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: #1e293b;
+  border-radius: 6px;
+  white-space: nowrap;
+  font-size: 0.8rem;
+}
+
+.headway-route-tag {
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: #ffffff;
+  font-size: 0.75rem;
+}
+
+.headway-bus-badge {
+  background: #334155;
+  color: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.headway-bus-badge.is-bunched {
+  background: #7f1d1d;
+  color: #fca5a5;
+  border: 1px solid #ef4444;
+}
+
+.headway-gap {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px;
+}
+
+.headway-gap.is-bunched {
+  color: #f87171;
+  font-weight: 700;
+  background: rgba(239, 68, 68, 0.15);
+  border-radius: 4px;
+}
+
+/* Bunching & Duty Profile Badges */
+.badge-bunched {
+  background: #dc2626;
+  color: #ffffff;
+  font-weight: 700;
+  animation: pulse-bunched 2s infinite ease-in-out;
+}
+
+@keyframes pulse-bunched {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
+
+.badge-duty-full-day {
+  background: #0284c7;
+  color: #ffffff;
+}
+
+.badge-duty-booster {
+  background: #d97706;
+  color: #ffffff;
+}
+
+.badge-duty-standby {
+  background: #475569;
+  color: #cbd5e1;
+}
+
+/* ==========================================================================
+   Observed Travel Patterns: 1-Minute Transit Insights Grid
+   ========================================================================== */
+.transit-insights-grid {
+  margin-top: 20px;
+}
+
+.leaderboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.leaderboard-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #182234;
+  border: 1px solid #273553;
+  border-radius: 8px;
+  gap: 12px;
+  transition: background 0.15s ease;
+}
+
+.leaderboard-item:hover {
+  background: #1e2c44;
+}
+
+.leaderboard-rank {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #64748b;
+  width: 24px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.leaderboard-rank.top-1 { color: #f59e0b; }
+.leaderboard-rank.top-2 { color: #94a3b8; }
+.leaderboard-rank.top-3 { color: #b45309; }
+
+.leaderboard-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.leaderboard-stop-name {
+  font-weight: 600;
+  color: #f1f5f9;
+  font-size: 0.88rem;
+  margin-bottom: 2px;
+}
+
+.leaderboard-meta {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.leaderboard-metrics {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.leaderboard-dwell-val {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #38bdf8;
+}
+
+.leaderboard-dwell-label {
+  font-size: 0.7rem;
+  color: #64748b;
+}
+
+/* Corridor Segments List */
+.segments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.segment-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #182234;
+  border: 1px solid #273553;
+  border-radius: 8px;
+  gap: 12px;
+}
+
+.segment-route-badge {
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.segment-corridor {
+  flex: 1;
+  min-width: 0;
+}
+
+.segment-corridor-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.segment-arrow {
+  color: #64748b;
+  font-weight: normal;
+}
+
+.segment-meta {
+  font-size: 0.73rem;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+
+.segment-timing {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.segment-duration {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.segment-baseline {
+  font-size: 0.7rem;
+  color: #64748b;
+}
+
+/* Lecture Transition Surge Container */
+.surge-windows-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.surge-window-card {
+  background: #182234;
+  border: 1px solid #273553;
+  border-radius: 8px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.surge-window-card.is-active-window {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.surge-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.surge-time {
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: #f1f5f9;
+}
+
+.surge-magnitude {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #f59e0b;
+}
+
+.surge-desc {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+.surge-tip {
+  font-size: 0.72rem;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-top: 2px;
+}
+
+

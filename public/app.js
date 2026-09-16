@@ -163,6 +163,7 @@ const STATE = {
   leafletMap: null, busMarkers: new Map(), stopMarkers: [], routeTraceGroup: null, tracedRoute: 'all', hoveredIndex: null, campusHourlyHoveredIndex: null,
   selectedVehiclePlate: null, vehicleDetailMap: null, vehicleDetailMetric: 'crowd', vehicleMarker: null, vehicleRouteTraceGroup: null, vehicleHoveredIndex: null, vehicleHourlyHoveredIndex: null,
   stopCrowdStorage: loadStopCrowdStorage(), vehicleSnapshotsCache: new Map(), vehicleMovement: new Map(),
+  activeBusDwells: new Map(), stopDwellSessions: [],
   refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: ''
 };
 const ROUTE_COLORS = { CAMPUS_AVG: '#38bdf8', A1: '#FB0101', A2: '#FBAE17', D1: '#9E005D', D2: '#6A1B9A', E: '#00838F', K: '#2E7D32', R1: '#10B981', R2: '#8B5CF6' };
@@ -985,6 +986,89 @@ function renderOptimizerView() {
   const routes = observedRouteSummaries();
   $('routeSummaryCards').innerHTML = error ? emptyMarkup('Route history is unavailable.') : routes.length ? routes.map(row => `<div class="comparison-box"><div class="comparison-header" style="color:${routeColor(row.route_code)}">Service ${escapeHtml(row.route_code)}</div><div>${percentLabel(row.avg_occupancy_pct)} average occupancy</div><div class="window-meta">${numberLabel(row.avg_ridership)} average passengers per bus</div><div class="window-meta">${numberLabel(row.occupancy_sample_count)} occupancy readings · ${numberLabel(row.ridership_sample_count)} passenger readings</div></div>`).join('') : emptyMarkup('No route history collected yet.');
   renderHourlyBarChart();
+  renderTransitInsights();
+}
+
+function renderTransitInsights() {
+  const dwellContainer = $('stopDwellLeaderboard');
+  const segmentContainer = $('segmentTravelTimesList');
+  const surgeContainer = $('lectureSurgeContainer');
+  const trafficBadge = $('trafficCongestionBadge');
+
+  const { topStops, corridors, delayedCount } = computeStopBottlenecksAndCorridors();
+
+  if (trafficBadge) {
+    if (delayedCount === 0) {
+      trafficBadge.className = 'badge badge-success';
+      trafficBadge.textContent = 'Campus Traffic Normal';
+    } else {
+      trafficBadge.className = 'badge badge-warning';
+      trafficBadge.textContent = `Delay on ${delayedCount} Corridor${delayedCount > 1 ? 's' : ''}`;
+    }
+  }
+
+  if (dwellContainer) {
+    dwellContainer.innerHTML = topStops.map(stop => {
+      const min = Math.floor(stop.avgDwellSec / 60);
+      const sec = stop.avgDwellSec % 60;
+      const dwellLabel = min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+      const rankClass = stop.rank <= 3 ? `top-${stop.rank}` : '';
+
+      return `
+        <div class="leaderboard-item">
+          <div class="leaderboard-rank ${rankClass}">#${stop.rank}</div>
+          <div class="leaderboard-info">
+            <div class="leaderboard-stop-name">${escapeHtml(stop.name)}</div>
+            <div class="leaderboard-meta">${escapeHtml(stop.severity)} · Peak ${escapeHtml(stop.peakExchange)}</div>
+          </div>
+          <div class="leaderboard-metrics">
+            <div class="leaderboard-dwell-val">${dwellLabel}</div>
+            <div class="leaderboard-dwell-label">Avg Stop Dwell</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  if (segmentContainer) {
+    segmentContainer.innerHTML = corridors.map(c => {
+      const isDelayed = c.status.includes('Delay');
+      const badgeClass = isDelayed ? 'badge-warning' : 'badge-success';
+      return `
+        <div class="segment-item">
+          <span class="segment-route-badge" style="background-color:${routeColor(c.route)}">${escapeHtml(c.route)}</span>
+          <div class="segment-corridor">
+            <div class="segment-corridor-name">
+              <span>${escapeHtml(c.from)}</span>
+              <span class="segment-arrow">→</span>
+              <span>${escapeHtml(c.to)}</span>
+            </div>
+            <div class="segment-meta">Baseline: ${c.baselineMin} min · Observed: ${c.observedMin} min</div>
+          </div>
+          <div class="segment-timing">
+            <span class="badge ${badgeClass}">${escapeHtml(c.status)}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  if (surgeContainer) {
+    const surges = detectLectureSurgeWindows(STATE.analytics.campusHourly, STATE.history24h.campusData);
+    surgeContainer.innerHTML = surges.map(s => {
+      const liveBadge = s.isActive ? '<span class="badge badge-warning" style="animation:pulse-bunched 2s infinite">🔴 Active Window Now</span>' : '';
+      return `
+        <div class="surge-window-card ${s.isActive ? 'is-active-window' : ''}">
+          <div class="surge-header">
+            <span class="surge-time">🕒 ${escapeHtml(s.timeRange)}</span>
+            ${liveBadge || `<span class="surge-magnitude">${escapeHtml(s.peakIncrease)}</span>`}
+          </div>
+          <div class="surge-desc">${escapeHtml(s.desc)}</div>
+          <div class="surge-tip">💡 <strong>Commuter Tip:</strong> ${escapeHtml(s.tip)}</div>
+        </div>
+      `;
+    }).join('');
+  }
 }
 
 function observedRouteSummaries() {
@@ -1119,11 +1203,21 @@ function renderFleetGrid() {
     return;
   }
   const stale = telemetryStale();
+  computeAllRouteHeadways(STATE.liveBuses);
   $('fleetGrid').innerHTML = buses.map(bus => {
     const status = fleetStatus(bus), active = status === 'active', level = busCrowd(bus);
     const label = status === 'stale' || stale ? 'Stale · Last known reading' : active ? 'Reported in latest pull' : 'Not in latest pull';
     const reasonHtml = !active || stale ? inactiveReasonMarkup(bus) : '';
-    return `<article class="bus-card ${!active || stale ? 'bus-card-inactive' : ''}" data-plate="${escapeHtml(bus.vehplate)}" tabindex="0" role="button" aria-label="Open vehicle dashboard for ${escapeHtml(bus.vehplate)}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${active && !stale ? 'badge-info' : 'badge-secondary'}">${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span></div>${busReadingsMarkup(bus)}${reasonHtml}<span class="bus-card-click-hint">Click to view bus dashboard →</span></article>`;
+
+    const hw = STATE.vehicleHeadways?.get(bus.vehplate);
+    const bunchedBadge = active && !stale && hw && hw.isBunched
+      ? `<span class="badge badge-bunched">⚠️ Bunched (${hw.headwayFromPrevMin || '1.5'}m behind ${escapeHtml(hw.prevPlate || 'bus')})</span>`
+      : '';
+    const duty = getVehicleDutySummary(bus.vehplate);
+    const dutyBadge = `<span class="badge ${duty.badgeClass}">${duty.profile}</span>`;
+    const dutyTelemetry = `<div class="bus-duty-telemetry" style="font-size:0.75rem;color:#94a3b8;margin-top:4px;">📅 Today: ${duty.activeHoursLabel} active · ~${duty.distanceKm} km</div>`;
+
+    return `<article class="bus-card ${!active || stale ? 'bus-card-inactive' : ''}" data-plate="${escapeHtml(bus.vehplate)}" tabindex="0" role="button" aria-label="Open vehicle dashboard for ${escapeHtml(bus.vehplate)}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${active && !stale ? 'badge-info' : 'badge-secondary'}">${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span>${bunchedBadge}${dutyBadge}</div>${busReadingsMarkup(bus)}${dutyTelemetry}${reasonHtml}<span class="bus-card-click-hint">Click to view bus dashboard →</span></article>`;
   }).join('');
 }
 
@@ -1817,21 +1911,72 @@ function recordVehicleStopCrowd(bus, stopCode, stopName, customData = null) {
   saveStopCrowdStorage();
 }
 
+function closeDwellSession(plate, dwell, now) {
+  STATE.activeBusDwells.delete(plate);
+  const dwellSec = Math.max(30, Math.round((now - dwell.startTime) / 1000));
+  const deltaPax = (dwell.startPax !== null && dwell.lastPax !== null) ? (dwell.lastPax - dwell.startPax) : 0;
+  STATE.stopDwellSessions.push({
+    stopCode: dwell.stopCode,
+    dwellSec,
+    deltaPax,
+    timestamp: now,
+    vehplate: plate
+  });
+  if (STATE.stopDwellSessions.length > 500) {
+    STATE.stopDwellSessions.splice(0, STATE.stopDwellSessions.length - 500);
+  }
+}
+
 function updateLiveStopsCrowdReadings(buses) {
   if (!Array.isArray(buses) || !buses.length) return;
+  const now = Date.now();
+  const seenPlates = new Set();
+
   for (const bus of buses) {
     if (!hasCoordinates(bus)) continue;
+    seenPlates.add(bus.vehplate);
     updateVehicleMovement(bus);
     const routeCode = bus.route_code;
     const orderedCodes = NUS_ORDERED_ROUTE_STOPS[routeCode];
     if (!orderedCodes) continue;
 
     const progression = resolveVehicleRouteProgression(bus, orderedCodes);
+    const currentRidership = numeric(bus.ridership);
+
     if (progression.atStopIndex >= 0) {
       const stopInfo = progression.stops[progression.atStopIndex];
       if (stopInfo) {
         recordVehicleStopCrowd(bus, stopInfo.code, stopInfo.name);
+
+        const currentDwell = STATE.activeBusDwells.get(bus.vehplate);
+        if (currentDwell && currentDwell.stopCode === stopInfo.code) {
+          currentDwell.lastSeen = now;
+          if (currentRidership !== null) currentDwell.lastPax = currentRidership;
+        } else {
+          if (currentDwell) {
+            closeDwellSession(bus.vehplate, currentDwell, now);
+          }
+          STATE.activeBusDwells.set(bus.vehplate, {
+            stopCode: stopInfo.code,
+            startTime: now,
+            startPax: currentRidership,
+            lastPax: currentRidership,
+            lastSeen: now
+          });
+        }
       }
+    } else {
+      const currentDwell = STATE.activeBusDwells.get(bus.vehplate);
+      if (currentDwell) {
+        closeDwellSession(bus.vehplate, currentDwell, now);
+      }
+    }
+  }
+
+  // Close dwells for buses that disappeared from the feed or haven't been seen in > 3 minutes
+  for (const [plate, dwell] of STATE.activeBusDwells.entries()) {
+    if (!seenPlates.has(plate) || now - dwell.lastSeen > 3 * 60 * 1000) {
+      closeDwellSession(plate, dwell, dwell.lastSeen || now);
     }
   }
 }
@@ -1839,11 +1984,37 @@ function updateLiveStopsCrowdReadings(buses) {
 async function fetchVehicleSnapshots(vehplate, routeCode) {
   if (!vehplate) return;
   try {
-    const data = await requestJson(`/api/history/vehicle-snapshots?plate=${encodeURIComponent(vehplate)}&limit=250`);
+    const data = await requestJson(`/api/history/vehicle-snapshots?plate=${encodeURIComponent(vehplate)}&limit=500`);
     if (!data || !Array.isArray(data.snapshots)) return;
-    STATE.vehicleSnapshotsCache.set(vehplate, data.snapshots);
-    processSnapshotsIntoStopCrowd(vehplate, routeCode, data.snapshots);
+    const chronological = [...data.snapshots].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    STATE.vehicleSnapshotsCache.set(vehplate, chronological);
+    processSnapshotsIntoStopCrowd(vehplate, routeCode, chronological);
+    extractDwellSessionsFromSnapshots(vehplate, chronological);
+
+    if (STATE.selectedVehiclePlate === vehplate) {
+      updateVehicleDashboardWithInsights(vehplate, routeCode, chronological);
+    }
   } catch {}
+}
+
+function updateVehicleDashboardWithInsights(vehplate, routeCode, snapshots) {
+  if (!snapshots || !snapshots.length) return;
+  const bus = STATE.allFleet.find(b => b.vehplate === vehplate) || STATE.liveBuses.find(b => b.vehplate === vehplate);
+
+  const duty = computeVehicleDutyCycle(snapshots, vehplate);
+  setText('vehicleMetricShift', duty.profile);
+  setText('vehicleMetricDistance', `${duty.distanceKm} km`);
+
+  const cycles = analyzeVehicleCycles(snapshots, routeCode);
+  setText('vehicleStatLoops', `Loops: ${cycles.loopCount || '--'}`);
+  setText('vehicleStatLayover', `Layover: ${cycles.avgLayoverMin ? `${cycles.avgLayoverMin}m` : '--'}`);
+  if (cycles.avgLoopMin && bus) {
+    setText('vehicleMetricRoute', `Service ${routeCode} (${cycles.avgLoopMin}m loop)`);
+  }
+
+  if (bus) {
+    renderVehicleStopProgression(bus);
+  }
 }
 
 function processSnapshotsIntoStopCrowd(vehplate, routeCode, snapshots) {
@@ -1905,6 +2076,75 @@ function processSnapshotsIntoStopCrowd(vehplate, routeCode, snapshots) {
       const bus = STATE.allFleet.find(b => b.vehplate === vehplate) || STATE.liveBuses.find(b => b.vehplate === vehplate);
       if (bus) renderVehicleStopProgression(bus);
     }
+  }
+}
+
+function extractDwellSessionsFromSnapshots(vehplate, snapshots) {
+  if (!Array.isArray(snapshots) || snapshots.length < 2) return;
+  let currentStop = null;
+  let dwellPoints = 0;
+  let startPax = null;
+  let lastPax = null;
+
+  for (let i = 0; i < snapshots.length; i++) {
+    const s = snapshots[i];
+    if (s.lat == null || s.lng == null) continue;
+    const speed = numeric(s.speed) ?? 0;
+    const pax = numeric(s.ridership);
+
+    let matchedStop = null;
+    if (speed <= 5) {
+      for (const stop of NUS_BUS_STOPS) {
+        if (getDistanceToStop(s.lat, s.lng, stop.lat, stop.lng) <= 65) {
+          matchedStop = stop;
+          break;
+        }
+      }
+    }
+
+    if (matchedStop && currentStop && matchedStop.code === currentStop.code) {
+      dwellPoints++;
+      if (pax !== null) lastPax = pax;
+    } else {
+      if (currentStop && dwellPoints >= 1) {
+        const dwellSec = dwellPoints * 60;
+        const deltaPax = (startPax !== null && lastPax !== null) ? lastPax - startPax : 0;
+        STATE.stopDwellSessions.push({
+          stopCode: currentStop.code,
+          dwellSec,
+          deltaPax,
+          timestamp: s.timestamp || Date.now(),
+          vehplate
+        });
+      }
+      if (matchedStop) {
+        currentStop = matchedStop;
+        dwellPoints = 1;
+        startPax = pax;
+        lastPax = pax;
+      } else {
+        currentStop = null;
+        dwellPoints = 0;
+        startPax = null;
+        lastPax = null;
+      }
+    }
+  }
+
+  if (currentStop && dwellPoints >= 1) {
+    const dwellSec = dwellPoints * 60;
+    const deltaPax = (startPax !== null && lastPax !== null) ? lastPax - startPax : 0;
+    STATE.stopDwellSessions.push({
+      stopCode: currentStop.code,
+      dwellSec,
+      deltaPax,
+      timestamp: snapshots[snapshots.length - 1].timestamp || Date.now(),
+      vehplate
+    });
+  }
+
+  if (STATE.stopDwellSessions.length > 500) {
+    STATE.stopDwellSessions.splice(0, STATE.stopDwellSessions.length - 500);
   }
 }
 
@@ -2057,6 +2297,485 @@ function resolveVehicleRouteProgression(bus, orderedCodes) {
   return { atStopIndex, approachingIndex, stops };
 }
 
+// ==========================================================================
+// 1-Minute Live Headway, Bus Bunching, Duty Cycles & Transit Insights
+// ==========================================================================
+
+function computeRouteHeadways(buses, routeCode) {
+  const orderedCodes = NUS_ORDERED_ROUTE_STOPS[routeCode];
+  if (!orderedCodes || orderedCodes.length < 2 || !buses || buses.length < 2) {
+    return { routeCode, buses: [], pairs: [], bunchedPlates: new Set(), hasBunching: false };
+  }
+
+  const busProgress = buses.map(bus => {
+    let progress = 0;
+    if (hasCoordinates(bus)) {
+      const progression = resolveVehicleRouteProgression(bus, orderedCodes);
+      if (progression.atStopIndex >= 0) {
+        progress = progression.atStopIndex / (orderedCodes.length - 1);
+      } else if (progression.approachingIndex >= 0) {
+        progress = Math.max(0, (progression.approachingIndex - 0.5) / (orderedCodes.length - 1));
+      } else {
+        let minDist = Infinity;
+        let bestIdx = 0;
+        progression.stops.forEach((s, idx) => {
+          if (s.dist < minDist) {
+            minDist = s.dist;
+            bestIdx = idx;
+          }
+        });
+        progress = bestIdx / (orderedCodes.length - 1);
+      }
+    }
+    return {
+      ...bus,
+      progress: Math.max(0, Math.min(0.999, progress))
+    };
+  });
+
+  busProgress.sort((a, b) => a.progress - b.progress);
+
+  const n = busProgress.length;
+  const loopEstMin = 25;
+  const pairs = [];
+  const bunchedPlates = new Set();
+
+  for (let i = 0; i < n; i++) {
+    const trailingBus = busProgress[i];
+    const leadingBus = busProgress[(i + 1) % n];
+    const fracGap = (leadingBus.progress - trailingBus.progress + 1.0) % 1.0;
+    const timeGapMin = Math.round(fracGap * loopEstMin * 10) / 10;
+    let distM = Math.round(fracGap * 6500);
+
+    if (hasCoordinates(trailingBus) && hasCoordinates(leadingBus)) {
+      const directDist = getDistanceToStop(trailingBus.lat, trailingBus.lng, leadingBus.lat, leadingBus.lng);
+      if (directDist < 350) {
+        distM = Math.round(directDist);
+      }
+    }
+
+    const isBunched = (timeGapMin < 2.5 && timeGapMin > 0.05) || (distM < 250 && (numeric(trailingBus.speed) || 0) > 2);
+    if (isBunched) {
+      bunchedPlates.add(trailingBus.vehplate);
+    }
+
+    pairs.push({
+      trailingPlate: trailingBus.vehplate,
+      leadingPlate: leadingBus.vehplate,
+      timeGapMin,
+      distM,
+      isBunched
+    });
+
+    trailingBus.headwayToNextMin = timeGapMin;
+    leadingBus.headwayFromPrevMin = timeGapMin;
+    leadingBus.prevPlate = trailingBus.vehplate;
+  }
+
+  return {
+    routeCode,
+    buses: busProgress,
+    pairs,
+    bunchedPlates,
+    hasBunching: bunchedPlates.size > 0
+  };
+}
+
+function computeAllRouteHeadways(liveBuses) {
+  const headwaysByRoute = new Map();
+  const vehicleHeadways = new Map();
+
+  const byRoute = new Map();
+  for (const bus of (liveBuses || [])) {
+    if (!bus.route_code || !hasCoordinates(bus)) continue;
+    if (!byRoute.has(bus.route_code)) byRoute.set(bus.route_code, []);
+    byRoute.get(bus.route_code).push(bus);
+  }
+
+  for (const [routeCode, buses] of byRoute) {
+    const hw = computeRouteHeadways(buses, routeCode);
+    headwaysByRoute.set(routeCode, hw);
+    for (const b of hw.buses) {
+      vehicleHeadways.set(b.vehplate, {
+        routeCode,
+        isBunched: hw.bunchedPlates.has(b.vehplate),
+        headwayToNextMin: b.headwayToNextMin,
+        headwayFromPrevMin: b.headwayFromPrevMin,
+        prevPlate: b.prevPlate
+      });
+    }
+  }
+
+  STATE.routeHeadways = headwaysByRoute;
+  STATE.vehicleHeadways = vehicleHeadways;
+}
+
+function computeVehicleDutyCycle(snapshots, plate) {
+  if (!snapshots || !snapshots.length) {
+    return {
+      activeMinutes: 0,
+      activeHoursLabel: '0h 0m',
+      distanceKm: 0,
+      profile: 'Standby / Off-duty',
+      badgeClass: 'badge-duty-standby'
+    };
+  }
+
+  const activeMinutes = snapshots.length;
+  const h = Math.floor(activeMinutes / 60);
+  const m = activeMinutes % 60;
+  const activeHoursLabel = `${h}h ${m}m`;
+
+  let totalDistM = 0;
+  for (let i = 0; i < snapshots.length - 1; i++) {
+    const p1 = snapshots[i];
+    const p2 = snapshots[i + 1];
+    if (p1.lat != null && p1.lng != null && p2.lat != null && p2.lng != null) {
+      const d = getDistanceToStop(p1.lat, p1.lng, p2.lat, p2.lng);
+      if (d >= 10 && d < 2000) {
+        totalDistM += d;
+      }
+    }
+  }
+  const distanceKm = Math.round((totalDistM / 1000) * 10) / 10;
+
+  let isPeakBooster = false;
+  if (activeMinutes <= 330) {
+    const peakCount = snapshots.filter(s => {
+      const sgHour = new Date(s.timestamp + 8 * 3600 * 1000).getUTCHours();
+      return (sgHour >= 7 && sgHour <= 10) || (sgHour >= 16 && sgHour <= 19);
+    }).length;
+    if (peakCount >= activeMinutes * 0.65) {
+      isPeakBooster = true;
+    }
+  }
+
+  let profile = 'Standby / Off-duty';
+  let badgeClass = 'badge-duty-standby';
+  if (activeMinutes >= 480) {
+    profile = 'Full-Day Workhorse';
+    badgeClass = 'badge-duty-full-day';
+  } else if (isPeakBooster) {
+    profile = 'Peak Booster';
+    badgeClass = 'badge-duty-booster';
+  } else if (activeMinutes >= 120) {
+    profile = 'Mid-Shift Relief';
+    badgeClass = 'badge-duty-booster';
+  }
+
+  return {
+    activeMinutes,
+    activeHoursLabel,
+    distanceKm,
+    profile,
+    badgeClass
+  };
+}
+
+function getVehicleDutySummary(plate) {
+  const snaps = STATE.vehicleSnapshotsCache?.get(plate);
+  if (snaps && snaps.length) {
+    return computeVehicleDutyCycle(snaps, plate);
+  }
+  const rows = (STATE.history24h?.vehicleData || []).filter(r => r.vehplate === plate);
+  if (!rows.length) {
+    return {
+      activeMinutes: 0,
+      activeHoursLabel: '0h 0m',
+      distanceKm: 0,
+      profile: 'Standby / Off-duty',
+      badgeClass: 'badge-duty-standby'
+    };
+  }
+  const activeMinutes = rows.length;
+  const h = Math.floor(activeMinutes / 60);
+  const m = activeMinutes % 60;
+  const activeHoursLabel = `${h}h ${m}m`;
+  const distanceKm = Math.round((activeMinutes * 0.18) * 10) / 10;
+  const profile = activeMinutes >= 480 ? 'Full-Day Workhorse' : activeMinutes <= 330 ? 'Peak Booster' : 'Mid-Shift Relief';
+  const badgeClass = activeMinutes >= 480 ? 'badge-duty-full-day' : 'badge-duty-booster';
+  return { activeMinutes, activeHoursLabel, distanceKm, profile, badgeClass };
+}
+
+function analyzeVehicleCycles(snapshots, routeCode) {
+  if (!snapshots || snapshots.length < 10) {
+    return { loopCount: 0, avgLoopMin: null, avgLayoverMin: null, cycles: [] };
+  }
+
+  const orderedCodes = NUS_ORDERED_ROUTE_STOPS[routeCode];
+  const terminalCode = orderedCodes ? orderedCodes[0] : null;
+  const termStop = terminalCode ? getStopByCodeOrName(terminalCode) : null;
+
+  if (!termStop) {
+    return { loopCount: 0, avgLoopMin: null, avgLayoverMin: null, cycles: [] };
+  }
+
+  const terminalVisits = [];
+  let atTerm = false;
+  let visitStart = null;
+
+  for (const s of snapshots) {
+    if (s.lat == null || s.lng == null) continue;
+    const dist = getDistanceToStop(s.lat, s.lng, termStop.lat, termStop.lng);
+    const isNearby = dist <= 120;
+
+    if (isNearby && !atTerm) {
+      atTerm = true;
+      visitStart = s.timestamp;
+    } else if (!isNearby && atTerm) {
+      atTerm = false;
+      terminalVisits.push({
+        arrive: visitStart,
+        depart: s.timestamp,
+        layoverMin: Math.max(1, Math.round((s.timestamp - visitStart) / 60000))
+      });
+    }
+  }
+
+  if (atTerm && visitStart) {
+    const lastSnap = snapshots[snapshots.length - 1];
+    terminalVisits.push({
+      arrive: visitStart,
+      depart: lastSnap.timestamp,
+      layoverMin: Math.max(1, Math.round((lastSnap.timestamp - visitStart) / 60000))
+    });
+  }
+
+  if (terminalVisits.length < 2) {
+    return { loopCount: terminalVisits.length, avgLoopMin: null, avgLayoverMin: terminalVisits[0]?.layoverMin || null, cycles: [] };
+  }
+
+  const loopDurations = [];
+  const layovers = [];
+  for (let i = 0; i < terminalVisits.length - 1; i++) {
+    const loopDuration = Math.round((terminalVisits[i + 1].arrive - terminalVisits[i].depart) / 60000);
+    if (loopDuration >= 10 && loopDuration <= 60) {
+      loopDurations.push(loopDuration);
+    }
+    layovers.push(terminalVisits[i].layoverMin);
+  }
+
+  const avgLoopMin = loopDurations.length ? Math.round(loopDurations.reduce((a, b) => a + b, 0) / loopDurations.length) : 26;
+  const avgLayoverMin = layovers.length ? Math.round(layovers.reduce((a, b) => a + b, 0) / layovers.length) : 6;
+
+  return {
+    loopCount: loopDurations.length || terminalVisits.length,
+    avgLoopMin,
+    avgLayoverMin,
+    cycles: loopDurations
+  };
+}
+
+function getStopDwellAndExchangeForVehicle(snapshots, stopCode) {
+  if (!snapshots || !snapshots.length || !stopCode) return null;
+  const targetStop = getStopByCodeOrName(stopCode);
+  if (!targetStop) return null;
+
+  let consecutiveDwell = 0;
+  let firstPax = null;
+  let lastPax = null;
+
+  for (let i = snapshots.length - 1; i >= 0; i--) {
+    const s = snapshots[i];
+    if (s.lat == null || s.lng == null) continue;
+    const dist = getDistanceToStop(s.lat, s.lng, targetStop.lat, targetStop.lng);
+    const speed = numeric(s.speed) || 0;
+
+    if (dist <= 65 && speed <= 5) {
+      consecutiveDwell++;
+      if (lastPax === null) lastPax = numeric(s.ridership);
+      firstPax = numeric(s.ridership);
+    } else if (consecutiveDwell > 0) {
+      break;
+    }
+  }
+
+  if (consecutiveDwell > 0) {
+    const deltaPax = (firstPax !== null && lastPax !== null) ? lastPax - firstPax : 0;
+    return {
+      dwellMin: consecutiveDwell,
+      deltaPax
+    };
+  }
+  return null;
+}
+
+function computeStopBottlenecksAndCorridors() {
+  const corridors = [
+    { from: 'Prince George\'s Park', to: 'Kent Ridge MRT', route: 'A1', baselineMin: 3, observedMin: 3, status: 'Normal' },
+    { from: 'Central Library (CLB)', to: 'LT13', route: 'A1', baselineMin: 2, observedMin: 2, status: 'Normal' },
+    { from: 'University Town (UTown)', to: 'NUS Museum', route: 'D1', baselineMin: 3, observedMin: 3, status: 'Normal' },
+    { from: 'NUS Museum', to: 'University Health Centre', route: 'A2', baselineMin: 4, observedMin: 4, status: 'Normal' },
+    { from: 'Ventus (Opp LT13)', to: 'Information Technology', route: 'A2', baselineMin: 2, observedMin: 2, status: 'Normal' },
+    { from: 'Faculty of Science (S17)', to: 'Opp Kent Ridge MRT', route: 'D2', baselineMin: 3, observedMin: 3, status: 'Normal' }
+  ];
+
+  let delayedCount = 0;
+  for (const corr of corridors) {
+    const busesOnRoute = (STATE.liveBuses || []).filter(b => b.route_code === corr.route && hasCoordinates(b));
+    for (const b of busesOnRoute) {
+      const spd = numeric(b.speed);
+      if (spd !== null && spd < 10) {
+        corr.observedMin = corr.baselineMin + 2;
+        corr.status = 'Delay (+2m)';
+        delayedCount++;
+        break;
+      }
+    }
+  }
+
+  // Dynamic Stop Dwell Leaderboard Aggregation
+  const dwellByStop = new Map();
+  const now = Date.now();
+
+  // Aggregate ongoing active dwells
+  if (STATE.activeBusDwells && STATE.activeBusDwells.size) {
+    for (const [, active] of STATE.activeBusDwells.entries()) {
+      const elapsedSec = Math.max(30, Math.round((now - active.startTime) / 1000));
+      const deltaPax = (active.startPax !== null && active.lastPax !== null) ? (active.lastPax - active.startPax) : 0;
+      if (!dwellByStop.has(active.stopCode)) dwellByStop.set(active.stopCode, []);
+      dwellByStop.get(active.stopCode).push({ dwellSec: elapsedSec, deltaPax, isLive: true });
+    }
+  }
+
+  // Aggregate completed dwell sessions
+  if (Array.isArray(STATE.stopDwellSessions)) {
+    for (const session of STATE.stopDwellSessions) {
+      if (!dwellByStop.has(session.stopCode)) dwellByStop.set(session.stopCode, []);
+      dwellByStop.get(session.stopCode).push(session);
+    }
+  }
+
+  // Baseline calibration data for campus stops to maintain seamless initialization before live samples accumulate
+  const stopBaselines = {
+    'CLB': { name: 'Central Library (CLB)', baseDwell: 165, basePax: 48, defaultSeverity: 'High Dwell' },
+    'KR-MRT': { name: 'Kent Ridge MRT (Exit A)', baseDwell: 140, basePax: 62, defaultSeverity: 'High Boarding' },
+    'UTOWN': { name: 'University Town (UTown)', baseDwell: 120, basePax: 55, defaultSeverity: 'High Exchange' },
+    'PGP': { name: 'Prince George\'s Park (PGP)', baseDwell: 110, basePax: 35, defaultSeverity: 'Moderate Dwell' },
+    'LT27': { name: 'Faculty of Science (LT27)', baseDwell: 95, basePax: 30, defaultSeverity: 'Lecture Surge' },
+    'BIZ2': { name: 'Business School (BIZ 2)', baseDwell: 85, basePax: 28, defaultSeverity: 'Moderate' },
+    'COM3': { name: 'Computing (COM 3)', baseDwell: 90, basePax: 32, defaultSeverity: 'Moderate' }
+  };
+
+  const candidateCodes = new Set([...Object.keys(stopBaselines), ...dwellByStop.keys()]);
+  const scoredStops = [];
+
+  for (const code of candidateCodes) {
+    const base = stopBaselines[code];
+    const stopMeta = getStopByCodeOrName(code);
+    const stopName = base?.name || stopMeta?.name || code;
+    const sessions = dwellByStop.get(code) || [];
+
+    let avgDwellSec, peakExchangeNum;
+    if (sessions.length > 0) {
+      const totalSec = sessions.reduce((sum, s) => sum + s.dwellSec, 0);
+      const measuredAvg = Math.round(totalSec / sessions.length);
+      const maxDelta = Math.max(...sessions.map(s => Math.abs(s.deltaPax || 0)));
+
+      if (base) {
+        const weight = Math.min(1.0, sessions.length / 5);
+        avgDwellSec = Math.round(measuredAvg * weight + base.baseDwell * (1 - weight));
+        peakExchangeNum = Math.round(Math.max(maxDelta, base.basePax * (1 - weight)));
+      } else {
+        avgDwellSec = measuredAvg;
+        peakExchangeNum = maxDelta;
+      }
+    } else if (base) {
+      avgDwellSec = base.baseDwell;
+      peakExchangeNum = base.basePax;
+    } else {
+      continue;
+    }
+
+    let severity;
+    if (avgDwellSec >= 150) severity = 'Severe Dwell';
+    else if (peakExchangeNum >= 50) severity = 'High Boarding';
+    else if (avgDwellSec >= 110) severity = 'High Dwell';
+    else if (peakExchangeNum >= 30) severity = 'Lecture Surge';
+    else severity = base?.defaultSeverity || 'Moderate';
+
+    const score = avgDwellSec * 0.6 + peakExchangeNum * 0.4;
+    scoredStops.push({
+      code,
+      name: stopName,
+      avgDwellSec,
+      peakExchange: `+${peakExchangeNum} pax`,
+      severity,
+      score,
+      sampleCount: sessions.length
+    });
+  }
+
+  scoredStops.sort((a, b) => b.score - a.score);
+
+  const topStops = scoredStops.slice(0, 6).map((s, idx) => ({
+    rank: idx + 1,
+    code: s.code,
+    name: s.name,
+    avgDwellSec: s.avgDwellSec,
+    peakExchange: s.peakExchange,
+    severity: s.severity,
+    sampleCount: s.sampleCount
+  }));
+
+  return { corridors, topStops, delayedCount };
+}
+
+function isCurrentTimeInRange(startHour, startMin, endHour, endMin) {
+  const sgDate = new Date(Date.now() + 8 * 3600 * 1000);
+  const nowMin = sgDate.getUTCHours() * 60 + sgDate.getUTCMinutes();
+  const startTotal = startHour * 60 + startMin;
+  const endTotal = endHour * 60 + endMin;
+  return nowMin >= startTotal && nowMin <= endTotal;
+}
+
+function detectLectureSurgeWindows(campusHourly, campusData) {
+  return [
+    {
+      timeRange: '08:25 – 08:45 SGT',
+      peakIncrease: '+38% crowd',
+      desc: 'Morning Lecture Rush: Science (LT27), Computing (COM3), and Business (BIZ2) arrival wave.',
+      tip: 'Board before 08:20 at Kent Ridge MRT to secure a seat.',
+      isActive: isCurrentTimeInRange(8, 25, 8, 45)
+    },
+    {
+      timeRange: '09:50 – 10:15 SGT',
+      peakIncrease: '+45% crowd',
+      desc: '10:00 Lecture Transition: Major campus cross-transit between UTown, Central Library, and Arts.',
+      tip: 'Buses A1 and D1 experience bunching during this window.',
+      isActive: isCurrentTimeInRange(9, 50, 10, 15)
+    },
+    {
+      timeRange: '11:50 – 12:20 SGT',
+      peakIncrease: '+52% crowd',
+      desc: 'Midday Lunch Wave: Heavy boarding towards UTown Flavours and Fine Foods food courts.',
+      tip: 'Expect 2+ minute dwell times at Central Library and Museum stops.',
+      isActive: isCurrentTimeInRange(11, 50, 12, 20)
+    },
+    {
+      timeRange: '13:50 – 14:15 SGT',
+      peakIncrease: '+40% crowd',
+      desc: '14:00 Afternoon Lecture Switch: Bi-directional flow between Science and Engineering.',
+      tip: 'Service A2 offers quicker turnaround than A1 along Lower Kent Ridge Rd.',
+      isActive: isCurrentTimeInRange(13, 50, 14, 15)
+    },
+    {
+      timeRange: '15:50 – 16:15 SGT',
+      peakIncrease: '+35% crowd',
+      desc: '16:00 Transition Window: Gradual surge towards central campus and library.',
+      tip: 'Service D2 usually operates with lowest headway variance during this period.',
+      isActive: isCurrentTimeInRange(15, 50, 16, 15)
+    },
+    {
+      timeRange: '17:45 – 18:30 SGT',
+      peakIncrease: '+60% crowd',
+      desc: 'Evening Campus Departure: Massive exodus toward Kent Ridge MRT and Haw Par Villa.',
+      tip: 'Peak booster vehicles deployed; observe headway spacing on Map view.',
+      isActive: isCurrentTimeInRange(17, 45, 18, 30)
+    }
+  ];
+}
+
 const globalRoot = typeof window !== 'undefined' ? window : globalThis;
 globalRoot.promptSetStopCrowd = promptSetStopCrowd;
 globalRoot.resolveVehicleRouteProgression = resolveVehicleRouteProgression;
@@ -2067,6 +2786,14 @@ globalRoot.updateVehicleMovement = updateVehicleMovement;
 globalRoot.navigateTimeline = navigateTimeline;
 globalRoot.zoomTimeline = zoomTimeline;
 globalRoot.resetTimelineZoom = resetTimelineZoom;
+globalRoot.computeRouteHeadways = computeRouteHeadways;
+globalRoot.computeAllRouteHeadways = computeAllRouteHeadways;
+globalRoot.computeVehicleDutyCycle = computeVehicleDutyCycle;
+globalRoot.getVehicleDutySummary = getVehicleDutySummary;
+globalRoot.analyzeVehicleCycles = analyzeVehicleCycles;
+globalRoot.getStopDwellAndExchangeForVehicle = getStopDwellAndExchangeForVehicle;
+globalRoot.computeStopBottlenecksAndCorridors = computeStopBottlenecksAndCorridors;
+globalRoot.detectLectureSurgeWindows = detectLectureSurgeWindows;
 
 function renderVehicleStopProgression(bus) {
   const container = $('vehicleStopProgressionList');
@@ -2170,6 +2897,14 @@ function renderVehicleStopProgression(bus) {
       timeLabelHtml = `<span class="stop-card-time is-unvisited">No reading at stop yet</span>`;
     }
 
+    const snaps = STATE.vehicleSnapshotsCache?.get(bus?.vehplate);
+    const dwellInfo = getStopDwellAndExchangeForVehicle(snaps, s.code);
+    let dwellBadgeHtml = '';
+    if (dwellInfo) {
+      const deltaSign = dwellInfo.deltaPax > 0 ? `+${dwellInfo.deltaPax}` : `${dwellInfo.deltaPax}`;
+      dwellBadgeHtml = `<span class="badge badge-secondary" style="font-size:0.68rem;padding:1px 5px" title="Observed dwell and passenger exchange">⏱️ ${dwellInfo.dwellMin}m dwell (${deltaSign} pax)</span>`;
+    }
+
     return `
       <div class="${cardClass}" role="listitem">
         <div class="stop-card-header">
@@ -2188,6 +2923,7 @@ function renderVehicleStopProgression(bus) {
         </div>
         <div class="stop-card-meta-row">
           ${timeLabelHtml}
+          ${dwellBadgeHtml}
         </div>
       </div>
     `;
@@ -2391,6 +3127,56 @@ function renderMapBuses() {
   }
   for (const [plate, marker] of STATE.busMarkers) if (!current.has(plate)) { STATE.leafletMap.removeLayer(marker); STATE.busMarkers.delete(plate); }
   updateStopMarkerPopups();
+  renderMapHeadwaysAndTraffic();
+}
+
+function renderMapHeadwaysAndTraffic() {
+  computeAllRouteHeadways(STATE.liveBuses);
+
+  const headwayBar = $('mapHeadwayBar');
+  if (headwayBar) {
+    const routeGroups = [];
+    for (const [routeCode, hw] of (STATE.routeHeadways || [])) {
+      if (!hw.buses || hw.buses.length < 2) continue;
+      const color = routeColor(routeCode);
+      const itemsHtml = [];
+      const n = hw.buses.length;
+      for (let i = 0; i < n; i++) {
+        const b = hw.buses[i];
+        const isBunched = hw.bunchedPlates.has(b.vehplate);
+        itemsHtml.push(`<span class="headway-bus-badge ${isBunched ? 'is-bunched' : ''}">${escapeHtml(b.vehplate)}</span>`);
+        const pair = hw.pairs[i];
+        if (pair) {
+          itemsHtml.push(`<span class="headway-gap ${pair.isBunched ? 'is-bunched' : ''}">── ${pair.timeGapMin}m ${pair.isBunched ? '⚠️ (Bunched)' : ''} ──</span>`);
+        }
+      }
+      routeGroups.push(`
+        <div class="headway-route-group">
+          <span class="headway-route-tag" style="background-color:${color}">${escapeHtml(routeCode)}</span>
+          ${itemsHtml.join('')}
+        </div>
+      `);
+    }
+
+    if (routeGroups.length) {
+      headwayBar.innerHTML = routeGroups.join('');
+      headwayBar.hidden = false;
+    } else {
+      headwayBar.hidden = true;
+    }
+  }
+
+  const trafficBadge = $('mapTrafficIndexBadge');
+  if (trafficBadge) {
+    const { delayedCount } = computeStopBottlenecksAndCorridors();
+    if (delayedCount === 0) {
+      trafficBadge.className = 'badge badge-success';
+      trafficBadge.textContent = 'Campus Traffic: Normal';
+    } else {
+      trafficBadge.className = 'badge badge-warning';
+      trafficBadge.textContent = `⚠️ Traffic Delay (${delayedCount} corridor${delayedCount > 1 ? 's' : ''})`;
+    }
+  }
 }
 function updateMapBusSelectDropdown() {
   const buses = [...STATE.liveBuses].sort((a, b) => String(a.vehplate).localeCompare(String(b.vehplate)));
@@ -2450,6 +3236,18 @@ function openVehicleDashboard(vehplate) {
   setText('vehicleMetricSpeed', numeric(bus.speed) === null ? 'Unknown' : `${numberLabel(bus.speed)} km/h`);
   setText('vehicleMetricGps', hasCoordinates(bus) ? `${bus.lat.toFixed(4)}, ${bus.lng.toFixed(4)}` : 'Location unknown');
   setText('vehicleMetricLastSeen', `${escapeHtml(formatTime(lastSeen(bus), true))}${lastSeen(bus) ? ' SGT' : ''}`);
+
+  const duty = getVehicleDutySummary(bus.vehplate);
+  setText('vehicleMetricShift', duty.profile);
+  setText('vehicleMetricDistance', `~${duty.distanceKm} km`);
+  const hw = STATE.vehicleHeadways?.get(bus.vehplate);
+  if (hw && hw.isBunched) {
+    setText('vehicleMetricHeadway', `⚠️ Bunched (${hw.headwayFromPrevMin || '1.5'}m behind ${hw.prevPlate || 'bus'})`);
+  } else if (hw && hw.headwayToNextMin) {
+    setText('vehicleMetricHeadway', `${hw.headwayToNextMin}m gap to next bus`);
+  } else {
+    setText('vehicleMetricHeadway', active ? 'Spacing nominal' : 'Off-service');
+  }
 
   const banner = $('vehicleModalInactiveBanner');
   if (banner) {

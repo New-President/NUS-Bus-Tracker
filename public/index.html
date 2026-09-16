@@ -93,7 +93,7 @@
 
     <section class="tab-content" id="tab-map" role="tabpanel" aria-labelledby="tabButtonMap">
       <div class="panel">
-        <div class="panel-header-controls"><div><h2 class="panel-title">NUS Kent Ridge Shuttle Map</h2><p class="panel-subtitle">Latest reported GPS locations and occupancy</p></div><div class="map-quick-stats"><span class="badge badge-info" id="mapActiveBusesBadge">No readings</span><button class="btn btn-sm btn-secondary" id="btnCenterCampus">Center Campus</button></div></div>
+        <div class="panel-header-controls"><div><h2 class="panel-title">NUS Kent Ridge Shuttle Map</h2><p class="panel-subtitle">Latest reported GPS locations and occupancy</p></div><div class="map-quick-stats"><span class="badge badge-info" id="mapTrafficIndexBadge">Campus Traffic: Normal</span><span class="badge badge-info" id="mapActiveBusesBadge">No readings</span><button class="btn btn-sm btn-secondary" id="btnCenterCampus">Center Campus</button></div></div>
         <div class="map-filter-bar">
           <div class="map-filter-group"><span class="map-filter-label">Route:</span><div class="map-route-pills" id="mapRouteFilterPills"></div></div>
           <div class="map-filter-group"><label class="map-filter-label" for="selectBusVehicle">Vehicle:</label><select id="selectBusVehicle" class="form-select form-select-sm"><option value="all">All vehicles</option></select></div>
@@ -101,6 +101,7 @@
           <div class="map-filter-group"><label class="map-filter-label" for="selectMapStop">Stop:</label><select id="selectMapStop" class="form-select form-select-sm"><option value="all">Jump to Bus Stop…</option></select></div>
           <div class="map-filter-group checkbox-group"><label class="checkbox-label"><input type="checkbox" id="checkShowRouteHighlights" checked> Show route highlights</label><label class="checkbox-label"><input type="checkbox" id="checkShowStops" checked> Show reference stops</label></div>
         </div>
+        <div class="map-headway-strip" id="mapHeadwayBar" hidden></div>
         <p class="data-note" id="mapDataMessage" role="status">Locations update only when the live feed is collected.</p>
         <div class="map-viewport-container"><div id="leafletMap" class="leaflet-map-frame" aria-label="Campus map"></div><div class="map-floating-legend"><div class="legend-title">Reported occupancy</div><div class="legend-row"><span class="legend-dot green"></span><span>Low &lt;35%</span></div><div class="legend-row"><span class="legend-dot yellow"></span><span>Medium 35–&lt;75%</span></div><div class="legend-row"><span class="legend-dot red"></span><span>High ≥75%</span></div><div class="legend-row"><span class="legend-dot unknown"></span><span>Unknown</span></div><div class="legend-row route-trace-legend" id="legendRouteTrace" hidden><span class="legend-line" id="legendRouteLine"></span><span id="legendRouteName">Route trace</span></div></div></div>
       </div>
@@ -114,6 +115,45 @@
       </div>
       <div class="panel"><h2 class="panel-title">Route Observations</h2><p class="panel-subtitle">Average occupancy and passenger counts from retained live history</p><div class="route-comparison-cards" id="routeSummaryCards"></div></div>
       <div class="panel"><h2 class="panel-title">Observed Hourly Occupancy</h2><p class="panel-subtitle">Reported occupancy by hour (SGT) · A dot means no reading</p><div class="chart-wrapper hourly-chart"><canvas id="hourlyBarChart" width="1100" height="260" role="img" aria-label="Average reported occupancy by Singapore hour">Hourly occupancy chart requires canvas support.</canvas><div class="chart-tooltip" id="hourlyChartTooltip" role="tooltip" aria-hidden="true" style="display:none"></div></div></div>
+
+      <!-- 1-Minute High-Resolution Transit Insights -->
+      <div class="optimizer-grid transit-insights-grid">
+        <!-- Campus Bus Stop Bottleneck & Dwell Leaderboard -->
+        <div class="panel">
+          <div class="panel-header-controls">
+            <div>
+              <h2 class="panel-title">Stop Dwell &amp; Boarding Bottlenecks</h2>
+              <p class="panel-subtitle">Stops with longest average dwell times &amp; highest passenger exchange</p>
+            </div>
+            <span class="badge badge-info" id="stopBottleneckBadge">Live Telemetry</span>
+          </div>
+          <div class="leaderboard-list" id="stopDwellLeaderboard"></div>
+        </div>
+
+        <!-- Campus Corridors & Segment Travel Times -->
+        <div class="panel">
+          <div class="panel-header-controls">
+            <div>
+              <h2 class="panel-title">Corridor &amp; Segment Travel Times</h2>
+              <p class="panel-subtitle">Observed transit times between sequential stops vs baseline</p>
+            </div>
+            <span class="badge badge-success" id="trafficCongestionBadge">Campus Traffic Normal</span>
+          </div>
+          <div class="segments-list" id="segmentTravelTimesList"></div>
+        </div>
+      </div>
+
+      <!-- Micro-Crowding Lecture Surge Waves -->
+      <div class="panel">
+        <div class="panel-header-controls">
+          <div>
+            <h2 class="panel-title">Lecture Transition Demand Waves (10-Minute Spikes)</h2>
+            <p class="panel-subtitle">Rapid crowd surges observed around lecture dismissal windows (:25–:35 and :50–:05)</p>
+          </div>
+          <span class="badge badge-warning" id="lectureSurgeAlertBadge">Lecture Windows</span>
+        </div>
+        <div class="surge-windows-container" id="lectureSurgeContainer"></div>
+      </div>
     </section>
 
     <section class="tab-content" id="tab-fleet" role="tabpanel" aria-labelledby="tabButtonFleet">
@@ -196,6 +236,18 @@
           <span class="vehicle-metric-label">Last Observed</span>
           <strong class="vehicle-metric-val" id="vehicleMetricLastSeen">--</strong>
         </div>
+        <div class="vehicle-metric-item">
+          <span class="vehicle-metric-label">Duty Profile</span>
+          <strong class="vehicle-metric-val" id="vehicleMetricShift">--</strong>
+        </div>
+        <div class="vehicle-metric-item">
+          <span class="vehicle-metric-label">Est. Mileage</span>
+          <strong class="vehicle-metric-val" id="vehicleMetricDistance">--</strong>
+        </div>
+        <div class="vehicle-metric-item">
+          <span class="vehicle-metric-label">Route Spacing</span>
+          <strong class="vehicle-metric-val" id="vehicleMetricHeadway">--</strong>
+        </div>
       </div>
 
       <!-- Modal Scrollable Body -->
@@ -241,6 +293,8 @@
               <span id="vehicleStatPeak">Peak: --</span>
               <span id="vehicleStatAvg">24h Bus Avg: --</span>
               <span id="vehicleStatActiveCount">Observed: --</span>
+              <span id="vehicleStatLoops">Loops: --</span>
+              <span id="vehicleStatLayover">Layover: --</span>
             </div>
           </div>
         </div>
