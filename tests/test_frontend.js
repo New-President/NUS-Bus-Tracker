@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const NOW = Date.parse('2026-09-10T16:05:00Z');
-const INTERVAL = 5 * 60 * 1000;
+const INTERVAL = 1 * 60 * 1000;
 
 function canvasContext() {
   const records = { paths: [], dots: [], text: [], rectangles: [] };
@@ -180,7 +180,7 @@ function dashboard() {
     promptSetStopCrowd, recordVehicleStopCrowd, updateLiveStopsCrowdReadings,
     processSnapshotsIntoStopCrowd, calculateBearing, angleDifference, getVehicleBearing,
     updateVehicleMovement, resolveVehicleRouteProgression,
-    navigateTimeline, zoomTimeline, resetTimelineZoom
+    navigateTimeline, zoomTimeline, resetTimelineZoom, getCachedTimelineSeries
   };`, sandbox, { filename: 'public/app.js' });
   return {
     ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
@@ -225,6 +225,7 @@ test('empty and null-only timeline views show missing readings without drawing i
 
 test('timeline draws measured zero and breaks the line at missing intervals', () => {
   const ui = dashboard();
+  ui.STATE.smoothing = 'raw';
   const end = Math.floor(NOW / INTERVAL) * INTERVAL;
   ui.STATE.history24h = { queryRange: { end: NOW }, routeData: [], campusData: [
     { bucket_ts: end - 4 * INTERVAL, avg_ridership: 0, avg_occupancy_pct: null },
@@ -285,7 +286,7 @@ test('smoothing toggle button switches between smoothed and raw view modes', asy
     }
   });
   assert.equal(ui.STATE.smoothing, 'raw');
-  assert.match(ui.element('panelTimelineSubtitle').textContent, /5-minute intervals/);
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /1-minute intervals/);
 
   // Switch back to smoothed
   await ui.element('smoothingToggleGroup').dispatch('click', {
@@ -419,7 +420,7 @@ test('dashboard date controls and chart labels use Singapore time across UTC mid
   ui.STATE.timeMode = 'date';
   ui.STATE.selectedDate = '2026-09-11';
   ui.renderTimelineChart();
-  assert.match(ui.element('panelTimelineSubtitle').textContent, /11 Sept.*00:00.*23:55.*SGT/);
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /11 Sept.*00:00.*23:59.*SGT/);
   assert.ok(ui.drawing('timelineChart').text.some(item => item.text === '00:00'));
 });
 
@@ -1353,7 +1354,7 @@ test('timeline chart renders vertical lines dividing the view into 24 parts and 
   ui.STATE.selectedDate = '2026-09-10';
   ui.renderTimelineChart();
   assert.equal(ui.STATE.timelineZoom.startIndex, 0);
-  assert.equal(ui.STATE.timelineZoom.endIndex, 287);
+  assert.equal(ui.STATE.timelineZoom.endIndex, 1439);
   assert.equal(ui.element('timelineWindowBadge').textContent, 'All 24 Hours');
 
   // Verify hour slice select dropdown is removed from DOM
@@ -1362,7 +1363,7 @@ test('timeline chart renders vertical lines dividing the view into 24 parts and 
   // Canvas drawing has vertical divider lines dividing the 24 hours
   const drawing = ui.drawing('timelineChart');
   const verticalGridPaths = drawing.paths.filter(p => p.color === '#1e2b45');
-  // 24 hourly marks (00:00 to 23:00) + right boundary at 24:00 (index 287) = 25 lines (24 parts)
+  // 24 hourly marks (00:00 to 23:00) + right boundary at 24:00 (index 1439) = 25 lines (24 parts)
   assert.ok(verticalGridPaths.length >= 24, `Expected at least 24 vertical divider lines, got ${verticalGridPaths.length}`);
 });
 
@@ -1378,7 +1379,7 @@ test('timeline chart left and right navigation steps through the timeline and cl
   const initialStart = ui.STATE.timelineZoom.startIndex;
   const initialEnd = ui.STATE.timelineZoom.endIndex;
   const initialSpan = initialEnd - initialStart;
-  assert.ok(initialSpan < 100);
+  assert.ok(initialSpan < 500);
 
   // Navigate Right (Next) via button click -> shifts forward
   await ui.element('btnTimelineNext').click();
@@ -1389,16 +1390,16 @@ test('timeline chart left and right navigation steps through the timeline and cl
   assert.equal(ui.STATE.timelineZoom.startIndex, initialStart);
 
   // Navigate Left repeatedly to start boundary
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
     await ui.element('btnTimelinePrev').click();
   }
   assert.equal(ui.STATE.timelineZoom.startIndex, 0, 'Clamps at start boundary 0');
 
   // Navigate Right repeatedly to end boundary
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 30; i++) {
     await ui.element('btnTimelineNext').click();
   }
-  assert.equal(ui.STATE.timelineZoom.endIndex, 287, 'Clamps at end boundary 287');
+  assert.equal(ui.STATE.timelineZoom.endIndex, 1439, 'Clamps at end boundary 1439');
 });
 
 test('timeline chart zoom in, zoom out, and reset adjust window span', async () => {
@@ -1406,12 +1407,12 @@ test('timeline chart zoom in, zoom out, and reset adjust window span', async () 
   ui.renderTimelineChart();
   ui.setupChartInteractivity();
 
-  assert.equal(ui.STATE.timelineZoom.endIndex - ui.STATE.timelineZoom.startIndex, 287);
+  assert.equal(ui.STATE.timelineZoom.endIndex - ui.STATE.timelineZoom.startIndex, 1439);
 
   // Zoom In: halves window span
   await ui.element('btnTimelineZoomIn').click();
   const span1 = ui.STATE.timelineZoom.endIndex - ui.STATE.timelineZoom.startIndex;
-  assert.ok(span1 < 200, `Zoom in decreased span: ${span1}`);
+  assert.ok(span1 < 1000, `Zoom in decreased span: ${span1}`);
 
   // Zoom In again
   await ui.element('btnTimelineZoomIn').click();
@@ -1426,7 +1427,7 @@ test('timeline chart zoom in, zoom out, and reset adjust window span', async () 
   // Zoom Reset: restores full 24h
   await ui.element('btnTimelineZoomReset').click();
   assert.equal(ui.STATE.timelineZoom.startIndex, 0);
-  assert.equal(ui.STATE.timelineZoom.endIndex, 287);
+  assert.equal(ui.STATE.timelineZoom.endIndex, 1439);
   assert.equal(ui.element('timelineWindowBadge').textContent, 'All 24 Hours');
 });
 
@@ -1453,5 +1454,39 @@ test('timeline chart drag panning shifts visible window and hovered index respec
   await canvas.dispatch('mouseup', { clientX: 200, clientY: 200 });
 
   assert.ok(ui.STATE.timelineZoom.startIndex > 96, 'Dragging left shifted the window forward in time');
+});
+
+test('timeline series caching memoizes repeated renders and fast smoothing optimizes calculation', () => {
+  const ui = dashboard();
+  ui.STATE.activeRoutes = new Set(['CAMPUS_AVG', 'A1']);
+  const end = Math.floor(NOW / 60000) * 60000;
+  const start = end - 1439 * 60000;
+  ui.STATE.history24h = {
+    queryRange: { end: NOW },
+    routeData: [
+      { route_code: 'A1', bucket_ts: end - 10 * 60000, avg_ridership: 15, avg_occupancy_pct: 30 }
+    ],
+    campusData: [
+      { bucket_ts: end - 10 * 60000, avg_ridership: 15, avg_occupancy_pct: 30 }
+    ]
+  };
+
+  // First call computes series
+  const res1 = ui.getCachedTimelineSeries(start, 1440, true);
+  assert.ok(res1);
+  assert.ok(res1.seriesMap.has('A1'));
+
+  // Second call with same state returns exactly memoized instance (no re-calculation)
+  const res2 = ui.getCachedTimelineSeries(start, 1440, true);
+  assert.equal(res1, res2, 'Subsequent call returns memoized series result');
+
+  // Verify smoothSeries produces accurate rounded values with precomputed weights
+  const noisy = [10, 20, 30, 40, 50, 60, 50, 40, 30, 20, 10];
+  const smoothed = ui.smoothSeries(noisy);
+  assert.equal(smoothed.length, noisy.length);
+  assert.ok(Number.isFinite(smoothed[5]));
+  // Numbers are rounded to 1 decimal place without strings
+  assert.equal(typeof smoothed[5], 'number');
+  assert.equal(Math.round(smoothed[5] * 10) / 10, smoothed[5]);
 });
 

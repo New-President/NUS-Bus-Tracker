@@ -21,7 +21,7 @@ export class BusCollector {
     // Resolve stored credentials only within a request or collection, since
     // shared databases may need asynchronous network access.
     this.currentSource = null;
-    this.intervalMs = (Number(this.env?.POLL_INTERVAL_MS) || (this.env?.POLL_INTERVAL_SEC ? Number(this.env.POLL_INTERVAL_SEC) * 1000 : null)) || 5 * 60 * 1000;
+    this.intervalMs = (Number(this.env?.POLL_INTERVAL_MS) || (this.env?.POLL_INTERVAL_SEC ? Number(this.env.POLL_INTERVAL_SEC) * 1000 : null)) || 1 * 60 * 1000;
     this.timer = null;
     this.running = false;
     this.pendingPoll = null;
@@ -130,7 +130,7 @@ export class BusCollector {
       tokenExpiresAt: publicOnly ? null : guestStatus.tokenExpiresAt,
       sessionRenewAt: univus ? guestStatus.sessionRenewAt : null,
       connectionState: lastError ? 'error' : lastPolledAt && lastAttemptAt ? 'healthy' : 'pending',
-      lastError, isPolling: this.isPolling, isStale: !lastPolledAt || now - lastPolledAt > Math.max(7.5 * 60 * 1000, this.intervalMs * 1.5),
+      lastError, isPolling: this.isPolling, isStale: !lastPolledAt || now - lastPolledAt > Math.max(90 * 1000, this.intervalMs * 1.5),
       pollingIntervalSec: this.intervalMs / 1000, lastPolledAt, lastAttemptAt,
       lastPolledIso: lastPolledAt ? new Date(lastPolledAt).toISOString() : null,
       nextPollInSec: this.running ? Math.max(0, Math.ceil((this.intervalMs - (now - lastAttemptAt)) / 1000)) : null,

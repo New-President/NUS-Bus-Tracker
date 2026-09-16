@@ -77,7 +77,7 @@ test('history and available dates use Singapore timestamps across UTC midnight',
   await db.recordPoll([bus('THIRD')], third);
   assert.deepEqual(await db.getAvailableDates(), ['2026-01-04', '2026-01-02', '2026-01-01']);
   const rows = (await db.get24HourHistory(first, second)).campusData;
-  assert.deepEqual(rows.map(row => row.time_str), ['23:55', '00:00']);
+  assert.deepEqual(rows.map(row => row.time_str), ['23:59', '00:02']);
   assert.equal((await db.getExportRows()).find(row => row.vehplate === 'SECOND').time_str, '00:02');
   const analytics = await db.getHourlyAnalytics(first, second);
   assert.deepEqual(analytics.campusHourly.map(row => row.hour), [0, 23]);

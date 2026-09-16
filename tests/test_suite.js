@@ -472,7 +472,7 @@ test('collector defers shared database access and resolves status asynchronously
   collector.start();
   const scheduled = await collector.getStatus();
   assert.equal(scheduled.collectionMode, 'scheduled');
-  assert.equal(scheduled.nextPollInSec, 300);
+  assert.equal(scheduled.nextPollInSec, 60);
 });
 
 test('collection stays pending until shared observations and error cleanup are persisted', async t => {
@@ -575,7 +575,7 @@ test('stopping the scheduler during a shared state read prevents a new provider 
   assert.equal(collector.timer, null);
 });
 
-test('local scheduling automatically collects on startup and every five minutes until stopped', async t => {
+test('local scheduling automatically collects on startup and every minute until stopped', async t => {
   const db = createTestDatabase(t);
   await db.ready();
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
@@ -594,19 +594,19 @@ test('local scheduling automatically collects on startup and every five minutes 
   await flush();
   assert.equal(providerCalls, 1, 'Starting the local server collects without a dashboard request');
   assert.equal((await db.getLatestPoll()).timestamp, NOW);
-  assert.equal((await collector.getStatus()).nextPollInSec, 300);
+  assert.equal((await collector.getStatus()).nextPollInSec, 60);
 
-  t.mock.timers.tick(299999);
+  t.mock.timers.tick(59999);
   await flush();
-  assert.equal(providerCalls, 1, 'No second collection occurs before five minutes');
+  assert.equal(providerCalls, 1, 'No second collection occurs before one minute');
   t.mock.timers.tick(1);
   await flush();
-  assert.equal(providerCalls, 2, 'The second automatic collection starts exactly five minutes later');
-  assert.equal((await db.getLatestPoll()).timestamp, NOW + 300000);
+  assert.equal(providerCalls, 2, 'The second automatic collection starts exactly one minute later');
+  assert.equal((await db.getLatestPoll()).timestamp, NOW + 60000);
   assert.equal(await db.getTotalSnapshotsCount(), 2);
 
   collector.stop();
-  t.mock.timers.tick(300000);
+  t.mock.timers.tick(60000);
   await flush();
   assert.equal(providerCalls, 2, 'Stopping the server cancels the next automatic collection');
   assert.equal(collector.timer, null);

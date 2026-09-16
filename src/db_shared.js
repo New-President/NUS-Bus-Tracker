@@ -1,6 +1,6 @@
 export const ACTIVE_WINDOW_MS = 15 * 60 * 1000;
 export const DAY_MS = 24 * 60 * 60 * 1000;
-export const BUCKET_MS = 5 * 60 * 1000;
+export const BUCKET_MS = 1 * 60 * 1000;
 
 const POLL_BATCH_COLUMNS = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,

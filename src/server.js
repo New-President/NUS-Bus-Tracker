@@ -253,7 +253,7 @@ if (!hosted(process.env) && process.argv[1] && path.resolve(process.argv[1]) ===
   });
   server.listen(port, host, () => {
     console.log(`NUS Shuttle Bus Crowd Tracker: http://${host}:${server.address().port}`);
-    console.log('Collection runs every 5 minutes. Automatic guest access renews daily; source and coverage are shown in the dashboard.');
+    console.log('Collection runs every 1 minute. Automatic guest access renews daily; source and coverage are shown in the dashboard.');
     collector.start();
   });
   const shutdown = async () => {

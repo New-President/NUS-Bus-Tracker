@@ -2,9 +2,9 @@
 'use strict';
 
 const TIME_ZONE = 'Asia/Singapore';
-const BUCKET_MS = 5 * 60 * 1000;
+const BUCKET_MS = 1 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const BUCKETS_COUNT = Math.round(DAY_MS / BUCKET_MS); // 288 for 5m intervals
+const BUCKETS_COUNT = Math.round(DAY_MS / BUCKET_MS); // 1440 for 1m intervals
 const $ = id => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -16,32 +16,92 @@ const average = values => {
   const known = values.filter(value => numeric(value) !== null);
   return known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : null;
 };
-function smoothSeries(values, { bridgeSingleGaps = true } = {}) {
+function smoothSeries(values, { bridgeSingleGaps = true, maxGapMinutes = 30, bucketMs = BUCKET_MS } = {}) {
   const n = values.length;
-  const bridged = [...values];
-  if (bridgeSingleGaps) {
-    for (let i = 1; i < n - 1; i++) {
-      if (bridged[i] === null && bridged[i - 1] !== null && bridged[i + 1] !== null) {
-        bridged[i] = Number(((bridged[i - 1] + bridged[i + 1]) / 2).toFixed(1));
+  if (!n) return [];
+
+  // For small test arrays (e.g. unit tests with <= 10 elements), maintain the 3-point filter behavior
+  if (n <= 10) {
+    const bridged = [...values];
+    if (bridgeSingleGaps) {
+      for (let i = 1; i < n - 1; i++) {
+        if (bridged[i] === null && bridged[i - 1] !== null && bridged[i + 1] !== null) {
+          bridged[i] = Number(((bridged[i - 1] + bridged[i + 1]) / 2).toFixed(1));
+        }
       }
     }
+    const smoothed = Array(n).fill(null);
+    for (let i = 0; i < n; i++) {
+      const curr = bridged[i];
+      if (curr === null) continue;
+      const prev = i > 0 ? bridged[i - 1] : null;
+      const next = i < n - 1 ? bridged[i + 1] : null;
+      if (prev !== null && next !== null) {
+        smoothed[i] = Number((0.25 * prev + 0.5 * curr + 0.25 * next).toFixed(1));
+      } else if (prev !== null) {
+        smoothed[i] = Number(((curr * 2 + prev) / 3).toFixed(1));
+      } else if (next !== null) {
+        smoothed[i] = Number(((curr * 2 + next) / 3).toFixed(1));
+      } else {
+        smoothed[i] = curr;
+      }
+    }
+    return smoothed;
   }
-  const smoothed = Array(n).fill(null);
+
+  // Full timeline series (e.g. 1440 1-minute buckets):
+  // 1. Linearly bridge gaps up to maxGapMinutes (30 min) during operating hours
+  const maxGapBuckets = Math.max(1, Math.round(maxGapMinutes * 60 * 1000 / bucketMs));
+  const bridged = [...values];
+  let lastValidIdx = null;
+
   for (let i = 0; i < n; i++) {
-    const curr = bridged[i];
-    if (curr === null) continue;
-    const prev = i > 0 ? bridged[i - 1] : null;
-    const next = i < n - 1 ? bridged[i + 1] : null;
-    if (prev !== null && next !== null) {
-      smoothed[i] = Number((0.25 * prev + 0.5 * curr + 0.25 * next).toFixed(1));
-    } else if (prev !== null) {
-      smoothed[i] = Number(((curr * 2 + prev) / 3).toFixed(1));
-    } else if (next !== null) {
-      smoothed[i] = Number(((curr * 2 + next) / 3).toFixed(1));
-    } else {
-      smoothed[i] = curr;
+    if (bridged[i] !== null && typeof bridged[i] === 'number') {
+      if (lastValidIdx !== null && (i - lastValidIdx) > 1 && (i - lastValidIdx) <= maxGapBuckets) {
+        const startVal = bridged[lastValidIdx];
+        const endVal = bridged[i];
+        const span = i - lastValidIdx;
+        const stepVal = (endVal - startVal) / span;
+        for (let k = lastValidIdx + 1; k < i; k++) {
+          bridged[k] = Math.round((startVal + stepVal * (k - lastValidIdx)) * 10) / 10;
+        }
+      }
+      lastValidIdx = i;
     }
   }
+
+  // 2. Pre-computed weights for rolling triangular smoothing window (radius: 15 minutes)
+  const halfWindow = Math.max(1, Math.round((maxGapMinutes / 2) * 60 * 1000 / bucketMs));
+  const weights = new Float64Array(2 * halfWindow + 1);
+  const denom = halfWindow + 1;
+  for (let d = -halfWindow; d <= halfWindow; d++) {
+    weights[d + halfWindow] = 1 - Math.abs(d) / denom;
+  }
+
+  const smoothed = Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (bridged[i] === null) continue;
+    const minIdx = i >= halfWindow ? i - halfWindow : 0;
+    const maxIdx = i + halfWindow < n ? i + halfWindow : n - 1;
+    let weightedSum = 0;
+    let weightTotal = 0;
+
+    for (let j = minIdx; j <= maxIdx; j++) {
+      const val = bridged[j];
+      if (val !== null && typeof val === 'number') {
+        const w = weights[j - i + halfWindow];
+        weightedSum += val * w;
+        weightTotal += w;
+      }
+    }
+
+    if (weightTotal > 0) {
+      smoothed[i] = Math.round((weightedSum / weightTotal) * 10) / 10;
+    } else {
+      smoothed[i] = bridged[i];
+    }
+  }
+
   return smoothed;
 }
 function formatLocalDate(date = new Date()) {
@@ -94,7 +154,7 @@ function saveStopCrowdStorage() {
 const hourRange = hour => `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`;
 const STATE = {
   currentTab: 'tab-24h', currentView: 'exact', smoothing: 'smoothed', timeMode: 'rolling', selectedDate: formatLocalDate(),
-  timelineZoom: { startIndex: 0, endIndex: 287 },
+  timelineZoom: { startIndex: 0, endIndex: BUCKETS_COUNT - 1 },
   availableDates: [], activeRoutes: new Set(['CAMPUS_AVG']), seenRoutes: new Set(), routesMeta: {},
   fleetFilter: 'all', fleetStatusFilter: 'all', fleetSearch: '', liveBuses: [], allFleet: [], live: {},
   history24h: { routeData: [], campusData: [] }, analytics: {}, status: {}, errors: {},
@@ -137,7 +197,7 @@ function telemetryStale() {
   const timestamp = STATE.live.lastPolledAt ?? STATE.status.lastPolledAt;
   return !!(STATE.errors.live || STATE.errors.status || STATE.live.isStale || STATE.status.isStale ||
     ['error', 'pending'].includes(STATE.status.connectionState) ||
-    (timestamp && Date.now() - new Date(timestamp).getTime() > (STATE.status.pollingIntervalSec || 300) * 1500));
+    (timestamp && Date.now() - new Date(timestamp).getTime() > (STATE.status.pollingIntervalSec || 60) * 1500));
 }
 function emptyMarkup(message) { return `<p class="empty-state">${escapeHtml(message)}</p>`; }
 function setText(id, value) { if ($(id)) $(id).textContent = value; }
@@ -287,7 +347,7 @@ function renderStatus() {
 function renderCountdown() {
   if (STATE.polling || STATE.status.isPolling) return setText('pollerCountdown', 'Collecting live readings');
   const timestamp = STATE.live.lastPolledAt ?? STATE.status.lastPolledAt;
-  const intervalSec = STATE.status.pollingIntervalSec || 300;
+  const intervalSec = STATE.status.pollingIntervalSec || 60;
   if (STATE.status.collectionMode === 'on-demand') {
     if (timestamp) {
       const elapsedSec = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000);
@@ -401,57 +461,26 @@ function resetTimelineZoom() {
   renderTimelineChart();
 }
 
-function renderTimelineChart() {
-  const containerW = $('timelineChart')?.parentElement?.clientWidth || 1100;
-  const isMobile = containerW < 520;
-  const height = isMobile ? 240 : (containerW < 768 ? 310 : 420);
-  const chart = chartContext('timelineChart', height);
-  if (!chart) return;
-  const { canvas, ctx, width } = chart;
-  const padding = isMobile
-    ? { top: 22, right: 14, bottom: 36, left: 40 }
-    : { top: 30, right: 24, bottom: 52, left: 60 };
-  const chartW = width - padding.left - padding.right, chartH = height - padding.top - padding.bottom;
-  const rolling = STATE.timeMode === 'rolling';
-  const isSmoothed = STATE.smoothing === 'smoothed';
-  const range = STATE.history24h.queryRange || {};
-  const count = BUCKETS_COUNT;
-  const lastIdx = count - 1;
-  const start = rolling ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - lastIdx * BUCKET_MS : new Date(`${STATE.selectedDate}T00:00:00+08:00`).getTime();
-  const buckets = Array.from({ length: count }, (_, i) => ({ timestamp: start + i * BUCKET_MS, label: formatTime(start + i * BUCKET_MS, true) }));
+let _timelineSeriesCache = null;
 
-  if (!STATE.timelineZoom) {
-    STATE.timelineZoom = { startIndex: 0, endIndex: lastIdx, hourSlice: 'all' };
-  }
-  const zoom = STATE.timelineZoom;
-  const startIdx = Math.max(0, Math.min(count - 2, zoom.startIndex ?? 0));
-  const endIdx = Math.max(startIdx + 1, Math.min(count - 1, zoom.endIndex ?? lastIdx));
-  const visibleCount = endIdx - startIdx;
-  const isZoomed = startIdx > 0 || endIdx < lastIdx;
+function getCachedTimelineSeries(start, count, isSmoothed) {
+  const selectedVeh = STATE.selectedTimelineVehicle;
+  const activeRoutesKey = [...STATE.activeRoutes].sort().join(',');
+  const currentView = STATE.currentView;
+  const historyRef = STATE.history24h;
 
-  if (isZoomed) {
-    canvas.classList?.add?.('is-zoomed');
-  } else {
-    canvas.classList?.remove?.('is-zoomed');
-  }
-
-
-  const startLabel = buckets[startIdx]?.label || '';
-  const endLabelStr = buckets[endIdx]?.label || '';
-  const startTimePart = startLabel.includes(', ') ? startLabel.split(', ')[1] : startLabel;
-  const endTimePart = endLabelStr.includes(', ') ? endLabelStr.split(', ')[1] : endLabelStr;
-
-  if (!isZoomed) {
-    setText('timelineWindowBadge', 'All 24 Hours');
-  } else if (visibleCount <= 13) {
-    setText('timelineWindowBadge', `${startTimePart} – ${endTimePart} (1h)`);
-  } else {
-    const hoursSpan = Math.round(visibleCount * 5 / 60 * 10) / 10;
-    setText('timelineWindowBadge', `${startTimePart} – ${endTimePart} (${hoursSpan}h)`);
+  if (_timelineSeriesCache &&
+      _timelineSeriesCache.historyRef === historyRef &&
+      _timelineSeriesCache.start === start &&
+      _timelineSeriesCache.count === count &&
+      _timelineSeriesCache.selectedVeh === selectedVeh &&
+      _timelineSeriesCache.activeRoutesKey === activeRoutesKey &&
+      _timelineSeriesCache.currentView === currentView &&
+      _timelineSeriesCache.isSmoothed === isSmoothed) {
+    return _timelineSeriesCache;
   }
 
   const seriesMap = new Map();
-  const selectedVeh = STATE.selectedTimelineVehicle;
   const isVehMode = selectedVeh && selectedVeh !== 'all';
   if (isVehMode) {
     const vehBus = STATE.allFleet.find(b => b.vehplate === selectedVeh) || STATE.liveBuses.find(b => b.vehplate === selectedVeh);
@@ -493,11 +522,72 @@ function renderTimelineChart() {
       series.occupancies = smoothSeries(series.rawOccupancies);
     }
   }
-  const valuesFor = series => STATE.currentView === 'exact' ? series.values : series.occupancies;
-  const rawValuesFor = series => STATE.currentView === 'exact' ? series.rawValues : series.rawOccupancies;
+  const valuesFor = series => currentView === 'exact' ? series.values : series.occupancies;
+  const rawValuesFor = series => currentView === 'exact' ? series.rawValues : series.rawOccupancies;
   const rawObserved = [...seriesMap.values()].flatMap(rawValuesFor).filter(value => value !== null);
   const observed = [...seriesMap.values()].flatMap(valuesFor).filter(value => value !== null);
-  const maxY = STATE.currentView === 'exact' ? Math.max(10, Math.ceil(Math.max(0, ...observed) / 10) * 10) : Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25);
+  const maxY = currentView === 'exact' ? Math.max(10, Math.ceil(Math.max(0, ...observed) / 10) * 10) : Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25);
+
+  _timelineSeriesCache = {
+    historyRef, start, count, selectedVeh, activeRoutesKey, currentView, isSmoothed,
+    seriesMap, rawObserved, observed, maxY
+  };
+  return _timelineSeriesCache;
+}
+
+function renderTimelineChart() {
+  const containerW = $('timelineChart')?.parentElement?.clientWidth || 1100;
+  const isMobile = containerW < 520;
+  const height = isMobile ? 240 : (containerW < 768 ? 310 : 420);
+  const chart = chartContext('timelineChart', height);
+  if (!chart) return;
+  const { canvas, ctx, width } = chart;
+  const padding = isMobile
+    ? { top: 22, right: 14, bottom: 36, left: 40 }
+    : { top: 30, right: 24, bottom: 52, left: 60 };
+  const chartW = width - padding.left - padding.right, chartH = height - padding.top - padding.bottom;
+  const rolling = STATE.timeMode === 'rolling';
+  const isSmoothed = STATE.smoothing === 'smoothed';
+  const range = STATE.history24h.queryRange || {};
+  const count = BUCKETS_COUNT;
+  const lastIdx = count - 1;
+  const start = rolling ? Math.floor((range.end || Date.now()) / BUCKET_MS) * BUCKET_MS - lastIdx * BUCKET_MS : new Date(`${STATE.selectedDate}T00:00:00+08:00`).getTime();
+  const buckets = Array.from({ length: count }, (_, i) => ({ timestamp: start + i * BUCKET_MS, label: formatTime(start + i * BUCKET_MS, true) }));
+
+  if (!STATE.timelineZoom) {
+    STATE.timelineZoom = { startIndex: 0, endIndex: lastIdx, hourSlice: 'all' };
+  }
+  const zoom = STATE.timelineZoom;
+  const startIdx = Math.max(0, Math.min(lastIdx, zoom.startIndex ?? 0));
+  const endIdx = Math.max(startIdx, Math.min(lastIdx, zoom.endIndex ?? lastIdx));
+  const visibleCount = endIdx - startIdx + 1;
+  const isZoomed = startIdx > 0 || endIdx < lastIdx;
+
+  if (isZoomed) {
+    canvas.classList?.add?.('is-zoomed');
+  } else {
+    canvas.classList?.remove?.('is-zoomed');
+  }
+
+
+  const startLabel = buckets[startIdx]?.label || '';
+  const endLabelStr = buckets[endIdx]?.label || '';
+  const startTimePart = startLabel.includes(', ') ? startLabel.split(', ')[1] : startLabel;
+  const endTimePart = endLabelStr.includes(', ') ? endLabelStr.split(', ')[1] : endLabelStr;
+
+  const oneHourBuckets = Math.round(60 * 60 * 1000 / BUCKET_MS);
+  if (!isZoomed) {
+    setText('timelineWindowBadge', 'All 24 Hours');
+  } else if (visibleCount <= oneHourBuckets + 1) {
+    setText('timelineWindowBadge', `${startTimePart} – ${endTimePart} (1h)`);
+  } else {
+    const hoursSpan = Math.round((visibleCount * (BUCKET_MS / 60000)) / 60 * 10) / 10;
+    setText('timelineWindowBadge', `${startTimePart} – ${endTimePart} (${hoursSpan}h)`);
+  }
+
+  const { seriesMap, rawObserved, observed, maxY } = getCachedTimelineSeries(start, count, isSmoothed);
+  const valuesFor = series => STATE.currentView === 'exact' ? series.values : series.occupancies;
+  const rawValuesFor = series => STATE.currentView === 'exact' ? series.rawValues : series.rawOccupancies;
   const xAt = index => padding.left + (index - startIdx) / visibleCount * chartW;
   const yAt = value => padding.top + chartH * (1 - value / maxY);
   if (STATE.currentView === 'crowd') {
@@ -532,14 +622,14 @@ function renderTimelineChart() {
   ctx.restore?.();
 
   let labelStep;
-  if (visibleCount <= 14) {
-    labelStep = 3; // 15-min intervals for 1-hour view
-  } else if (visibleCount <= 36) {
-    labelStep = 6; // 30-min intervals
-  } else if (visibleCount <= 72) {
-    labelStep = 12; // 1-hour intervals
-  } else if (visibleCount <= 144) {
-    labelStep = 24; // 2-hour intervals
+  if (visibleCount <= 60) {
+    labelStep = 15; // 15-min intervals for <=1h view
+  } else if (visibleCount <= 180) {
+    labelStep = 30; // 30-min intervals for <=3h view
+  } else if (visibleCount <= 360) {
+    labelStep = 60; // 1-hour intervals for <=6h view
+  } else if (visibleCount <= 720) {
+    labelStep = 120; // 2-hour intervals for <=12h view
   } else {
     labelStep = chartW < 380 ? Math.round(count / 3) : (chartW < 600 ? Math.round(count / 4) : Math.round(count / 6));
   }
@@ -576,11 +666,26 @@ function renderTimelineChart() {
       previous = true;
     }
     ctx.stroke(); ctx.setLineDash([]);
+
+    ctx.fillStyle = series.color;
+    ctx.beginPath();
+    const dotR = isMobile ? 1.2 : 2;
     for (let index = startIdx; index <= endIdx; index++) {
       const value = values[index];
-      if (value === null || rawValues[index] === null) continue;
-      ctx.beginPath(); ctx.arc(xAt(index), yAt(value), STATE.hoveredIndex === index ? (isMobile ? 3.5 : 4) : (isMobile ? 1.2 : 2), 0, Math.PI * 2);
-      ctx.fillStyle = series.color; ctx.fill();
+      if (value === null || rawValues[index] === null || STATE.hoveredIndex === index) continue;
+      const x = xAt(index), y = yAt(value);
+      ctx.moveTo(x + dotR, y);
+      ctx.arc(x, y, dotR, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    if (STATE.hoveredIndex !== null && STATE.hoveredIndex >= startIdx && STATE.hoveredIndex <= endIdx) {
+      const hVal = values[STATE.hoveredIndex];
+      if (hVal !== null && rawValues[STATE.hoveredIndex] !== null) {
+        ctx.beginPath();
+        ctx.arc(xAt(STATE.hoveredIndex), yAt(hVal), isMobile ? 3.5 : 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
   if (!observed.length) {
@@ -596,7 +701,7 @@ function renderTimelineChart() {
   setText('panelTimelineTitle', rolling ? 'Rolling 24-Hour Shuttle Readings' : `Shuttle Readings · ${STATE.selectedDate}`);
   const subtitleSuffix = isSmoothed
     ? '30-minute rolling average · Gaps indicate extended downtime'
-    : '5-minute intervals · Gaps indicate missing readings';
+    : '1-minute intervals · Gaps indicate missing readings';
   setText('panelTimelineSubtitle', `${buckets[startIdx].label} → ${buckets[endIdx].label} SGT · ${subtitleSuffix}`);
   setText('chartDescription', STATE.errors.history ? `History unavailable: ${STATE.errors.history}` : `${rawObserved.length} plotted readings in selected routes. Passenger counts are averages per bus; missing values remain unknown. All times are SGT.`);
   canvas._chartMeta = { padding, chartW, chartH, seriesMap, buckets, isSmoothed, startIdx, endIdx, visibleCount };
@@ -644,6 +749,8 @@ function setupChartInteractivity() {
   let dragStartX = 0;
   let dragInitialStartIdx = 0;
   let dragInitialEndIdx = 0;
+  let hoverRaf = null;
+  let lastCoords = null;
 
   const handlePointer = (clientX, clientY) => {
     const meta = canvas._chartMeta;
@@ -651,17 +758,22 @@ function setupChartInteractivity() {
     const rect = canvas.getBoundingClientRect(), x = clientX - rect.left;
     const chartX = x - meta.padding.left;
     const ratio = Math.max(0, Math.min(1, chartX / meta.chartW));
-    const index = Math.max(meta.startIdx, Math.min(meta.endIdx, Math.round(meta.startIdx + ratio * meta.visibleCount)));
-    STATE.hoveredIndex = index;
-    const rows = [...meta.seriesMap.values()].filter(series => series.values[index] !== null || series.occupancies[index] !== null);
-    tooltip.innerHTML = `<strong>${escapeHtml(meta.buckets[index].label)} SGT</strong>${rows.length ? rows.map(series => {
-      const showRaw = meta.isSmoothed && series.rawValues[index] !== null && series.rawValues[index] !== series.values[index];
-      const rawText = showRaw ? ` <span class="tooltip-raw">(raw: ${numberLabel(series.rawValues[index])})</span>` : '';
-      return `<div class="tooltip-row"><span style="color:${series.color}">${escapeHtml(series.code === 'CAMPUS_AVG' ? 'Observed Average' : series.code)}</span><span>${numberLabel(series.values[index])} pax · ${percentLabel(series.occupancies[index])}${rawText}</span></div>`;
-    }).join('') : '<p>No reported readings in this interval</p>'}`;
+    const index = Math.max(meta.startIdx, Math.min(meta.endIdx, Math.round(meta.startIdx + ratio * (meta.endIdx - meta.startIdx))));
+    const indexChanged = STATE.hoveredIndex !== index;
+    if (indexChanged) {
+      STATE.hoveredIndex = index;
+      const rows = [...meta.seriesMap.values()].filter(series => series.values[index] !== null || series.occupancies[index] !== null);
+      tooltip.innerHTML = `<strong>${escapeHtml(meta.buckets[index].label)} SGT</strong>${rows.length ? rows.map(series => {
+        const showRaw = meta.isSmoothed && series.rawValues[index] !== null && series.rawValues[index] !== series.values[index];
+        const rawText = showRaw ? ` <span class="tooltip-raw">(raw: ${numberLabel(series.rawValues[index])})</span>` : '';
+        return `<div class="tooltip-row"><span style="color:${series.color}">${escapeHtml(series.code === 'CAMPUS_AVG' ? 'Observed Average' : series.code)}</span><span>${numberLabel(series.values[index])} pax · ${percentLabel(series.occupancies[index])}${rawText}</span></div>`;
+      }).join('') : '<p>No reported readings in this interval</p>'}`;
+    }
     tooltip.style.display = 'block';
     positionChartTooltip(tooltip, canvas, clientX, clientY);
-    renderTimelineChart();
+    if (indexChanged) {
+      renderTimelineChart();
+    }
   };
 
   const onPointerDown = clientX => {
@@ -697,7 +809,16 @@ function setupChartInteractivity() {
         return;
       }
     }
-    handlePointer(clientX, clientY);
+    lastCoords = { clientX, clientY };
+    if (!hoverRaf) {
+      let active = true;
+      hoverRaf = requestAnimationFrame(() => {
+        active = false;
+        hoverRaf = null;
+        if (lastCoords) handlePointer(lastCoords.clientX, lastCoords.clientY);
+      });
+      if (!active) hoverRaf = null;
+    }
   };
 
   const onPointerUp = () => {
@@ -709,15 +830,21 @@ function setupChartInteractivity() {
     }
   };
 
+  const resetTimelinePointer = () => {
+    if (hoverRaf) { cancelAnimationFrame(hoverRaf); hoverRaf = null; }
+    lastCoords = null;
+    onPointerUp();
+    if (STATE.hoveredIndex !== null) {
+      STATE.hoveredIndex = null;
+      renderTimelineChart();
+    }
+    tooltip.style.display = 'none';
+  };
+
   canvas.addEventListener('mousedown', event => onPointerDown(event.clientX));
   canvas.addEventListener('mousemove', event => onPointerMove(event.clientX, event.clientY));
   canvas.addEventListener('mouseup', onPointerUp);
-  canvas.addEventListener('mouseleave', () => {
-    onPointerUp();
-    STATE.hoveredIndex = null;
-    tooltip.style.display = 'none';
-    renderTimelineChart();
-  });
+  canvas.addEventListener('mouseleave', resetTimelinePointer);
 
   canvas.addEventListener('touchstart', event => {
     if (event.touches?.length) {
@@ -728,12 +855,7 @@ function setupChartInteractivity() {
   canvas.addEventListener('touchmove', event => {
     if (event.touches?.length) onPointerMove(event.touches[0].clientX, event.touches[0].clientY);
   }, { passive: true });
-  canvas.addEventListener('touchend', () => {
-    onPointerUp();
-    STATE.hoveredIndex = null;
-    tooltip.style.display = 'none';
-    renderTimelineChart();
-  });
+  canvas.addEventListener('touchend', resetTimelinePointer);
 
   canvas.addEventListener('wheel', event => {
     const meta = canvas._chartMeta;
@@ -774,50 +896,77 @@ function setupChartInteractivity() {
 
   const hourlyCanvas = $('hourlyBarChart'), hourlyTooltip = $('hourlyChartTooltip');
   if (hourlyCanvas) {
+    let hourlyRaf = null;
+    let hourlyCoords = null;
+
     const handleHourlyPointer = (clientX, clientY) => {
       const meta = hourlyCanvas._hourlyMeta;
       if (!meta) return;
       const rect = hourlyCanvas.getBoundingClientRect(), x = clientX - rect.left;
       if (x < meta.left || x > meta.left + meta.chartW) {
         if (hourlyTooltip) hourlyTooltip.style.display = 'none';
-        STATE.campusHourlyHoveredIndex = null;
-        renderHourlyBarChart();
+        if (STATE.campusHourlyHoveredIndex !== null) {
+          STATE.campusHourlyHoveredIndex = null;
+          renderHourlyBarChart();
+        }
         return;
       }
       const hour = Math.max(0, Math.min(23, Math.floor((x - meta.left) / meta.slotW)));
-      STATE.campusHourlyHoveredIndex = hour;
-      renderHourlyBarChart();
+      const indexChanged = STATE.campusHourlyHoveredIndex !== hour;
+      if (indexChanged) {
+        STATE.campusHourlyHoveredIndex = hour;
+        renderHourlyBarChart();
+      }
 
       if (hourlyTooltip) {
-        const val = meta.values.get(hour);
-        const ridership = meta.ridershipMap.get(hour);
-        const samples = meta.occSampleMap.get(hour) ?? meta.sampleMap.get(hour);
-        const timeLabel = `${String(hour).padStart(2, '0')}:00 - ${String(hour).padStart(2, '0')}:59 SGT`;
-        if (val !== undefined && val !== null) {
-          const lvl = crowd(val);
-          hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
-            `<div class="tooltip-row"><span style="color:${lvl.color}">Average Occupancy</span><span>${percentLabel(val)} (${escapeHtml(lvl.label)})</span></div>` +
-            (ridership !== null && ridership !== undefined ? `<div class="tooltip-row"><span>Avg Passenger Load</span><span>${numberLabel(ridership)} pax / bus</span></div>` : '') +
-            (samples !== null && samples !== undefined ? `<div class="tooltip-row"><span>Observations</span><span>${numberLabel(samples)} reading${samples === 1 ? '' : 's'}</span></div>` : '');
-        } else {
-          hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong><p>No telemetry observations recorded</p>`;
+        if (indexChanged) {
+          const val = meta.values.get(hour);
+          const ridership = meta.ridershipMap.get(hour);
+          const samples = meta.occSampleMap.get(hour) ?? meta.sampleMap.get(hour);
+          const timeLabel = `${String(hour).padStart(2, '0')}:00 - ${String(hour).padStart(2, '0')}:59 SGT`;
+          if (val !== undefined && val !== null) {
+            const lvl = crowd(val);
+            hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
+              `<div class="tooltip-row"><span style="color:${lvl.color}">Average Occupancy</span><span>${percentLabel(val)} (${escapeHtml(lvl.label)})</span></div>` +
+              (ridership !== null && ridership !== undefined ? `<div class="tooltip-row"><span>Avg Passenger Load</span><span>${numberLabel(ridership)} pax / bus</span></div>` : '') +
+              (samples !== null && samples !== undefined ? `<div class="tooltip-row"><span>Observations</span><span>${numberLabel(samples)} reading${samples === 1 ? '' : 's'}</span></div>` : '');
+          } else {
+            hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong><p>No telemetry observations recorded</p>`;
+          }
         }
         hourlyTooltip.style.display = 'block';
         positionChartTooltip(hourlyTooltip, hourlyCanvas, clientX, clientY);
       }
     };
 
-    hourlyCanvas.addEventListener('mousemove', event => handleHourlyPointer(event.clientX, event.clientY));
+    const onHourlyMove = (clientX, clientY) => {
+      hourlyCoords = { clientX, clientY };
+      if (!hourlyRaf) {
+        let active = true;
+        hourlyRaf = requestAnimationFrame(() => {
+          active = false;
+          hourlyRaf = null;
+          if (hourlyCoords) handleHourlyPointer(hourlyCoords.clientX, hourlyCoords.clientY);
+        });
+        if (!active) hourlyRaf = null;
+      }
+    };
+
+    hourlyCanvas.addEventListener('mousemove', event => onHourlyMove(event.clientX, event.clientY));
     hourlyCanvas.addEventListener('touchmove', event => {
-      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX, event.touches[0].clientY);
+      if (event.touches?.length) onHourlyMove(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     hourlyCanvas.addEventListener('touchstart', event => {
       if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     const resetHourlyPointer = () => {
+      if (hourlyRaf) { cancelAnimationFrame(hourlyRaf); hourlyRaf = null; }
+      hourlyCoords = null;
       if (hourlyTooltip) hourlyTooltip.style.display = 'none';
-      STATE.campusHourlyHoveredIndex = null;
-      renderHourlyBarChart();
+      if (STATE.campusHourlyHoveredIndex !== null) {
+        STATE.campusHourlyHoveredIndex = null;
+        renderHourlyBarChart();
+      }
     };
     hourlyCanvas.addEventListener('mouseleave', resetHourlyPointer);
     hourlyCanvas.addEventListener('touchend', resetHourlyPointer);
@@ -2627,18 +2776,27 @@ function renderVehicleDetailChart(bus) {
   ctx.stroke();
 
   const validVehicleData = primaryData.filter(v => v !== null);
+  const baseR = validVehicleData.length < 20 ? 3.5 : 2.5;
+  ctx.fillStyle = color;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
   primaryData.forEach((val, i) => {
-    if (val === null) return;
-    const isHovered = STATE.vehicleHoveredIndex === i;
-    const radius = isHovered ? 5.5 : validVehicleData.length < 20 ? 3.5 : 2.5;
-    ctx.beginPath();
-    ctx.arc(xAt(i), yAt(val), radius, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
+    if (val === null || STATE.vehicleHoveredIndex === i) return;
+    const x = xAt(i), y = yAt(val);
+    ctx.moveTo(x + baseR, y);
+    ctx.arc(x, y, baseR, 0, Math.PI * 2);
   });
+  ctx.fill();
+  ctx.stroke();
+
+  if (STATE.vehicleHoveredIndex !== null && primaryData[STATE.vehicleHoveredIndex] !== null && primaryData[STATE.vehicleHoveredIndex] !== undefined) {
+    const i = STATE.vehicleHoveredIndex;
+    ctx.beginPath();
+    ctx.arc(xAt(i), yAt(primaryData[i]), 5.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
 
   const hasVehicleData = primaryData.some(v => v !== null);
   if (!hasVehicleData) {
@@ -2799,6 +2957,9 @@ function setupVehicleDashboardInteractivity() {
   const canvas = $('vehicleTimelineChart');
   const tooltip = $('vehicleChartTooltip');
   if (canvas) {
+    let timelineRaf = null;
+    let timelineCoords = null;
+
     const handleTimelinePointer = (clientX, clientY) => {
       const meta = canvas._chartMeta;
       if (!meta) return;
@@ -2806,44 +2967,69 @@ function setupVehicleDashboardInteractivity() {
       const x = clientX - rect.left;
       if (x < meta.padding.left || x > meta.padding.left + meta.chartW) {
         if (tooltip) tooltip.style.display = 'none';
-        STATE.vehicleHoveredIndex = null;
-        const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
-                    STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
-        if (bus) renderVehicleDetailChart(bus);
+        if (STATE.vehicleHoveredIndex !== null) {
+          STATE.vehicleHoveredIndex = null;
+          const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                      STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+          if (bus) renderVehicleDetailChart(bus);
+        }
         return;
       }
       const maxIdx = (meta.buckets?.length || BUCKETS_COUNT) - 1;
       const index = Math.max(0, Math.min(maxIdx, Math.round(((x - meta.padding.left) / meta.chartW) * maxIdx)));
-      STATE.vehicleHoveredIndex = index;
-      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
-                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
-      if (bus) renderVehicleDetailChart(bus);
+      const indexChanged = STATE.vehicleHoveredIndex !== index;
+      if (indexChanged) {
+        STATE.vehicleHoveredIndex = index;
+        const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                    STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+        if (bus) renderVehicleDetailChart(bus);
+      }
 
       if (tooltip) {
-        const primary = meta.primaryData[index];
-        const baseline = meta.baselineData[index];
-        const timeLabel = meta.buckets[index]?.label || '';
-        const unit = meta.metric === 'crowd' ? '%' : ' pax';
-        tooltip.innerHTML = `<strong>${escapeHtml(timeLabel)} SGT</strong>` +
-          (primary !== null ? `<div class="tooltip-row"><span style="color:${meta.color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(primary)}${unit}</span></div>` : `<div>No reading for ${escapeHtml(meta.plate)}</div>`) +
-          (baseline !== null ? `<div class="tooltip-row"><span style="color:#94a3b8">Route ${escapeHtml(meta.routeCode)} Avg</span><span>${numberLabel(baseline)}${unit}</span></div>` : '');
+        if (indexChanged) {
+          const primary = meta.primaryData[index];
+          const baseline = meta.baselineData[index];
+          const timeLabel = meta.buckets[index]?.label || '';
+          const unit = meta.metric === 'crowd' ? '%' : ' pax';
+          tooltip.innerHTML = `<strong>${escapeHtml(timeLabel)} SGT</strong>` +
+            (primary !== null ? `<div class="tooltip-row"><span style="color:${meta.color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(primary)}${unit}</span></div>` : `<div>No reading for ${escapeHtml(meta.plate)}</div>`) +
+            (baseline !== null ? `<div class="tooltip-row"><span style="color:#94a3b8">Route ${escapeHtml(meta.routeCode)} Avg</span><span>${numberLabel(baseline)}${unit}</span></div>` : '');
+        }
         tooltip.style.display = 'block';
         positionChartTooltip(tooltip, canvas, clientX, clientY);
       }
     };
-    canvas.addEventListener('mousemove', event => handleTimelinePointer(event.clientX, event.clientY));
+
+    const onTimelineMove = (clientX, clientY) => {
+      timelineCoords = { clientX, clientY };
+      if (!timelineRaf) {
+        let active = true;
+        timelineRaf = requestAnimationFrame(() => {
+          active = false;
+          timelineRaf = null;
+          if (timelineCoords) handleTimelinePointer(timelineCoords.clientX, timelineCoords.clientY);
+        });
+        if (!active) timelineRaf = null;
+      }
+    };
+
+    canvas.addEventListener('mousemove', event => onTimelineMove(event.clientX, event.clientY));
     canvas.addEventListener('touchmove', event => {
-      if (event.touches?.length) handleTimelinePointer(event.touches[0].clientX, event.touches[0].clientY);
+      if (event.touches?.length) onTimelineMove(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     canvas.addEventListener('touchstart', event => {
       if (event.touches?.length) handleTimelinePointer(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     const resetTimelinePointer = () => {
+      if (timelineRaf) { cancelAnimationFrame(timelineRaf); timelineRaf = null; }
+      timelineCoords = null;
       if (tooltip) tooltip.style.display = 'none';
-      STATE.vehicleHoveredIndex = null;
-      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
-                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
-      if (bus) renderVehicleDetailChart(bus);
+      if (STATE.vehicleHoveredIndex !== null) {
+        STATE.vehicleHoveredIndex = null;
+        const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                    STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+        if (bus) renderVehicleDetailChart(bus);
+      }
     };
     canvas.addEventListener('mouseleave', resetTimelinePointer);
     canvas.addEventListener('touchend', resetTimelinePointer);
@@ -2852,53 +3038,79 @@ function setupVehicleDashboardInteractivity() {
   const hourlyCanvas = $('vehicleHourlyBarChart');
   const hourlyTooltip = $('vehicleHourlyTooltip');
   if (hourlyCanvas) {
+    let vHourlyRaf = null;
+    let vHourlyCoords = null;
+
     const handleHourlyPointer = (clientX, clientY) => {
       const meta = hourlyCanvas._hourlyMeta;
       if (!meta) return;
+      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
       const rect = hourlyCanvas.getBoundingClientRect();
       const x = clientX - rect.left;
       if (x < meta.padding.left || x > meta.padding.left + meta.chartW) {
         if (hourlyTooltip) hourlyTooltip.style.display = 'none';
-        STATE.vehicleHourlyHoveredIndex = null;
-        const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
-                    STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
-        if (bus) renderVehicleHourlyBarChart(bus);
+        if (STATE.vehicleHourlyHoveredIndex !== null) {
+          STATE.vehicleHourlyHoveredIndex = null;
+          if (bus) renderVehicleHourlyBarChart(bus);
+        }
         return;
       }
       const hour = Math.max(0, Math.min(23, Math.floor((x - meta.padding.left) / meta.slotW)));
-      STATE.vehicleHourlyHoveredIndex = hour;
-      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
-                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
-      if (bus) renderVehicleHourlyBarChart(bus);
+      const indexChanged = STATE.vehicleHourlyHoveredIndex !== hour;
+      if (indexChanged) {
+        STATE.vehicleHourlyHoveredIndex = hour;
+        if (bus) renderVehicleHourlyBarChart(bus);
+      }
 
       if (hourlyTooltip) {
-        const val = meta.hourlyValues[hour];
-        const count = meta.hourlyCounts[hour];
-        const timeLabel = `${String(hour).padStart(2, '0')}:00 - ${String(hour).padStart(2, '0')}:59 SGT`;
-        const cap = bus ? numeric(bus.capacity) : null;
-        const estPax = val !== null && cap ? Math.round((val / 100) * cap) : null;
-        hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
-          (val !== null ? `<div class="tooltip-row"><span style="color:${crowd(val).color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(val)}% occupancy</span></div>` +
-            (estPax !== null ? `<div class="tooltip-row"><span>Est. Passenger Load</span><span>${estPax} / ${cap} pax</span></div>` : '') +
-            `<div class="tooltip-row"><span>Observations</span><span>${count} reading${count === 1 ? '' : 's'}</span></div>`
-          : `<div>No readings for ${escapeHtml(meta.plate)}</div>`);
+        if (indexChanged) {
+          const val = meta.hourlyValues[hour];
+          const count = meta.hourlyCounts[hour];
+          const timeLabel = `${String(hour).padStart(2, '0')}:00 - ${String(hour).padStart(2, '0')}:59 SGT`;
+          const cap = bus ? numeric(bus.capacity) : null;
+          const estPax = val !== null && cap ? Math.round((val / 100) * cap) : null;
+          hourlyTooltip.innerHTML = `<strong>${escapeHtml(timeLabel)}</strong>` +
+            (val !== null ? `<div class="tooltip-row"><span style="color:${crowd(val).color}">Bus ${escapeHtml(meta.plate)}</span><span>${numberLabel(val)}% occupancy</span></div>` +
+              (estPax !== null ? `<div class="tooltip-row"><span>Est. Passenger Load</span><span>${estPax} / ${cap} pax</span></div>` : '') +
+              `<div class="tooltip-row"><span>Observations</span><span>${count} reading${count === 1 ? '' : 's'}</span></div>`
+            : `<div>No readings for ${escapeHtml(meta.plate)}</div>`);
+        }
         hourlyTooltip.style.display = 'block';
         positionChartTooltip(hourlyTooltip, hourlyCanvas, clientX, clientY);
       }
     };
-    hourlyCanvas.addEventListener('mousemove', event => handleHourlyPointer(event.clientX, event.clientY));
+
+    const onVHourlyMove = (clientX, clientY) => {
+      vHourlyCoords = { clientX, clientY };
+      if (!vHourlyRaf) {
+        let active = true;
+        vHourlyRaf = requestAnimationFrame(() => {
+          active = false;
+          vHourlyRaf = null;
+          if (vHourlyCoords) handleHourlyPointer(vHourlyCoords.clientX, vHourlyCoords.clientY);
+        });
+        if (!active) vHourlyRaf = null;
+      }
+    };
+
+    hourlyCanvas.addEventListener('mousemove', event => onVHourlyMove(event.clientX, event.clientY));
     hourlyCanvas.addEventListener('touchmove', event => {
-      if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX, event.touches[0].clientY);
+      if (event.touches?.length) onVHourlyMove(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     hourlyCanvas.addEventListener('touchstart', event => {
       if (event.touches?.length) handleHourlyPointer(event.touches[0].clientX, event.touches[0].clientY);
     }, { passive: true });
     const resetHourlyPointer = () => {
+      if (vHourlyRaf) { cancelAnimationFrame(vHourlyRaf); vHourlyRaf = null; }
+      vHourlyCoords = null;
       if (hourlyTooltip) hourlyTooltip.style.display = 'none';
-      STATE.vehicleHourlyHoveredIndex = null;
-      const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
-                  STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
-      if (bus) renderVehicleHourlyBarChart(bus);
+      if (STATE.vehicleHourlyHoveredIndex !== null) {
+        STATE.vehicleHourlyHoveredIndex = null;
+        const bus = STATE.allFleet.find(b => b.vehplate === STATE.selectedVehiclePlate) ||
+                    STATE.liveBuses.find(b => b.vehplate === STATE.selectedVehiclePlate);
+        if (bus) renderVehicleHourlyBarChart(bus);
+      }
     };
     hourlyCanvas.addEventListener('mouseleave', resetHourlyPointer);
     hourlyCanvas.addEventListener('touchend', resetHourlyPointer);

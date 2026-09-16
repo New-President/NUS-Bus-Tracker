@@ -1,9 +1,9 @@
 /**
  * Standalone JavaScript poller for uNivUS API.
- * Polls every 5 minutes without requiring any authentication.
+ * Polls every 1 minute without requiring any authentication.
  *
  * Usage:
- *   node scripts/poll.js           # Run continuously every 5 minutes
+ *   node scripts/poll.js           # Run continuously every 1 minute
  *   node scripts/poll.js --once    # Run a single poll and exit
  *
  * Directly collects and persists observations using BusCollector into the database.
@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 import { getDatabase } from '../src/db.js';
 import { BusCollector } from '../src/collector.js';
 
-const INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const INTERVAL_MS = 1 * 60 * 1000; // 1 minute
 
 function nowIso() {
   return new Date().toISOString();
@@ -40,7 +40,8 @@ export function startPoller({ env = process.env, intervalMs = INTERVAL_MS } = {}
   let inFlight = false;
 
   console.log(`[${nowIso()}] [Poller] Starting JavaScript poller for uNivUS API.`);
-  console.log(`[${nowIso()}] [Poller] Interval: ${intervalMs / 60000} minutes, authentication: none required.`);
+  const intervalDesc = intervalMs / 60000 === 1 ? '1 minute' : `${intervalMs / 60000} minutes`;
+  console.log(`[${nowIso()}] [Poller] Interval: ${intervalDesc}, authentication: none required.`);
   console.log(`[${nowIso()}] [Poller] Mode: Direct uNivUS API collection to database.`);
 
   async function executePoll() {
@@ -49,9 +50,9 @@ export function startPoller({ env = process.env, intervalMs = INTERVAL_MS } = {}
     try {
       console.log(`[${nowIso()}] [Poller] Polling uNivUS API...`);
       const result = await runPollOnce({ env });
-      console.log(`[${nowIso()}] [Poller] Poll successful: ${result.recordsCount} vehicle readings recorded. Next poll in ${intervalMs / 60000} minutes.`);
+      console.log(`[${nowIso()}] [Poller] Poll successful: ${result.recordsCount} vehicle readings recorded. Next poll in ${intervalDesc}.`);
     } catch (error) {
-      console.error(`[${nowIso()}] [Poller] Poll failed: ${error.message}. Retrying in ${intervalMs / 60000} minutes.`);
+      console.error(`[${nowIso()}] [Poller] Poll failed: ${error.message}. Retrying in ${intervalDesc}.`);
     } finally {
       inFlight = false;
       if (running) {
