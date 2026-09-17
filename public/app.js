@@ -166,6 +166,7 @@ const STATE = {
   activeBusDwells: new Map(), stopDwellSessions: [],
   refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: ''
 };
+const MAX_PASSENGER_DWELL_SEC = 300; // 5 minutes max; dwell exceeding 5 mins is driver rest, layover, or staging downtime
 const ROUTE_COLORS = { CAMPUS_AVG: '#38bdf8', A1: '#FB0101', A2: '#FBAE17', D1: '#9E005D', D2: '#6A1B9A', E: '#00838F', K: '#2E7D32', R1: '#10B981', R2: '#8B5CF6' };
 function routeColor(code) {
   const color = STATE.routesMeta[code]?.color;
@@ -1913,7 +1914,15 @@ function recordVehicleStopCrowd(bus, stopCode, stopName, customData = null) {
 
 function closeDwellSession(plate, dwell, now) {
   STATE.activeBusDwells.delete(plate);
-  const dwellSec = Math.max(30, Math.round((now - dwell.startTime) / 1000));
+  const rawDwellSec = Math.round((now - dwell.startTime) / 1000);
+  // Exclude buses on downtime, driver rest, or parked layover (> 5 minutes or empty stationary >= 3m)
+  if (dwell.isDowntime || rawDwellSec > MAX_PASSENGER_DWELL_SEC) {
+    return;
+  }
+  if (rawDwellSec >= 180 && dwell.startPax === 0 && dwell.lastPax === 0) {
+    return;
+  }
+  const dwellSec = Math.max(30, rawDwellSec);
   const deltaPax = (dwell.startPax !== null && dwell.lastPax !== null) ? (dwell.lastPax - dwell.startPax) : 0;
   STATE.stopDwellSessions.push({
     stopCode: dwell.stopCode,
@@ -1952,6 +1961,9 @@ function updateLiveStopsCrowdReadings(buses) {
         if (currentDwell && currentDwell.stopCode === stopInfo.code) {
           currentDwell.lastSeen = now;
           if (currentRidership !== null) currentDwell.lastPax = currentRidership;
+          if (now - currentDwell.startTime > MAX_PASSENGER_DWELL_SEC * 1000) {
+            currentDwell.isDowntime = true;
+          }
         } else {
           if (currentDwell) {
             closeDwellSession(bus.vehplate, currentDwell, now);
@@ -1961,7 +1973,8 @@ function updateLiveStopsCrowdReadings(buses) {
             startTime: now,
             startPax: currentRidership,
             lastPax: currentRidership,
-            lastSeen: now
+            lastSeen: now,
+            isDowntime: false
           });
         }
       }
@@ -2108,14 +2121,18 @@ function extractDwellSessionsFromSnapshots(vehplate, snapshots) {
     } else {
       if (currentStop && dwellPoints >= 1) {
         const dwellSec = dwellPoints * 60;
-        const deltaPax = (startPax !== null && lastPax !== null) ? lastPax - startPax : 0;
-        STATE.stopDwellSessions.push({
-          stopCode: currentStop.code,
-          dwellSec,
-          deltaPax,
-          timestamp: s.timestamp || Date.now(),
-          vehplate
-        });
+        // Exclude downtime and resting buses (> 5 minutes or empty parked buses >= 3 minutes)
+        const isDowntime = dwellSec > MAX_PASSENGER_DWELL_SEC || (dwellSec >= 180 && startPax === 0 && lastPax === 0);
+        if (!isDowntime) {
+          const deltaPax = (startPax !== null && lastPax !== null) ? lastPax - startPax : 0;
+          STATE.stopDwellSessions.push({
+            stopCode: currentStop.code,
+            dwellSec,
+            deltaPax,
+            timestamp: s.timestamp || Date.now(),
+            vehplate
+          });
+        }
       }
       if (matchedStop) {
         currentStop = matchedStop;
@@ -2133,14 +2150,17 @@ function extractDwellSessionsFromSnapshots(vehplate, snapshots) {
 
   if (currentStop && dwellPoints >= 1) {
     const dwellSec = dwellPoints * 60;
-    const deltaPax = (startPax !== null && lastPax !== null) ? lastPax - startPax : 0;
-    STATE.stopDwellSessions.push({
-      stopCode: currentStop.code,
-      dwellSec,
-      deltaPax,
-      timestamp: snapshots[snapshots.length - 1].timestamp || Date.now(),
-      vehplate
-    });
+    const isDowntime = dwellSec > MAX_PASSENGER_DWELL_SEC || (dwellSec >= 180 && startPax === 0 && lastPax === 0);
+    if (!isDowntime) {
+      const deltaPax = (startPax !== null && lastPax !== null) ? lastPax - startPax : 0;
+      STATE.stopDwellSessions.push({
+        stopCode: currentStop.code,
+        dwellSec,
+        deltaPax,
+        timestamp: snapshots[snapshots.length - 1].timestamp || Date.now(),
+        vehplate
+      });
+    }
   }
 
   if (STATE.stopDwellSessions.length > 500) {
@@ -2592,9 +2612,11 @@ function getStopDwellAndExchangeForVehicle(snapshots, stopCode) {
 
   if (consecutiveDwell > 0) {
     const deltaPax = (firstPax !== null && lastPax !== null) ? lastPax - firstPax : 0;
+    const isDowntime = consecutiveDwell > 5 || (consecutiveDwell >= 3 && firstPax === 0 && lastPax === 0);
     return {
       dwellMin: consecutiveDwell,
-      deltaPax
+      deltaPax,
+      isDowntime
     };
   }
   return null;
@@ -2628,19 +2650,25 @@ function computeStopBottlenecksAndCorridors() {
   const dwellByStop = new Map();
   const now = Date.now();
 
-  // Aggregate ongoing active dwells
+  // Aggregate ongoing active dwells (strictly exclude buses resting, parked, or on downtime > 5 mins)
   if (STATE.activeBusDwells && STATE.activeBusDwells.size) {
     for (const [, active] of STATE.activeBusDwells.entries()) {
-      const elapsedSec = Math.max(30, Math.round((now - active.startTime) / 1000));
+      if (active.isDowntime) continue;
+      const elapsedSec = Math.round((now - active.startTime) / 1000);
+      if (elapsedSec > MAX_PASSENGER_DWELL_SEC) continue;
+      if (elapsedSec >= 180 && active.startPax === 0 && active.lastPax === 0) continue;
+
+      const validDwellSec = Math.max(30, elapsedSec);
       const deltaPax = (active.startPax !== null && active.lastPax !== null) ? (active.lastPax - active.startPax) : 0;
       if (!dwellByStop.has(active.stopCode)) dwellByStop.set(active.stopCode, []);
-      dwellByStop.get(active.stopCode).push({ dwellSec: elapsedSec, deltaPax, isLive: true });
+      dwellByStop.get(active.stopCode).push({ dwellSec: validDwellSec, deltaPax, isLive: true });
     }
   }
 
-  // Aggregate completed dwell sessions
+  // Aggregate completed dwell sessions (strictly exclude any session > 5 minutes)
   if (Array.isArray(STATE.stopDwellSessions)) {
     for (const session of STATE.stopDwellSessions) {
+      if (session.dwellSec > MAX_PASSENGER_DWELL_SEC) continue;
       if (!dwellByStop.has(session.stopCode)) dwellByStop.set(session.stopCode, []);
       dwellByStop.get(session.stopCode).push(session);
     }
@@ -2669,12 +2697,12 @@ function computeStopBottlenecksAndCorridors() {
     let avgDwellSec, peakExchangeNum;
     if (sessions.length > 0) {
       const totalSec = sessions.reduce((sum, s) => sum + s.dwellSec, 0);
-      const measuredAvg = Math.round(totalSec / sessions.length);
+      const measuredAvg = Math.min(MAX_PASSENGER_DWELL_SEC, Math.round(totalSec / sessions.length));
       const maxDelta = Math.max(...sessions.map(s => Math.abs(s.deltaPax || 0)));
 
       if (base) {
         const weight = Math.min(1.0, sessions.length / 5);
-        avgDwellSec = Math.round(measuredAvg * weight + base.baseDwell * (1 - weight));
+        avgDwellSec = Math.min(MAX_PASSENGER_DWELL_SEC, Math.round(measuredAvg * weight + base.baseDwell * (1 - weight)));
         peakExchangeNum = Math.round(Math.max(maxDelta, base.basePax * (1 - weight)));
       } else {
         avgDwellSec = measuredAvg;
@@ -2712,7 +2740,7 @@ function computeStopBottlenecksAndCorridors() {
     rank: idx + 1,
     code: s.code,
     name: s.name,
-    avgDwellSec: s.avgDwellSec,
+    avgDwellSec: Math.min(MAX_PASSENGER_DWELL_SEC, s.avgDwellSec),
     peakExchange: s.peakExchange,
     severity: s.severity,
     sampleCount: s.sampleCount
@@ -2794,6 +2822,7 @@ globalRoot.analyzeVehicleCycles = analyzeVehicleCycles;
 globalRoot.getStopDwellAndExchangeForVehicle = getStopDwellAndExchangeForVehicle;
 globalRoot.computeStopBottlenecksAndCorridors = computeStopBottlenecksAndCorridors;
 globalRoot.detectLectureSurgeWindows = detectLectureSurgeWindows;
+globalRoot.MAX_PASSENGER_DWELL_SEC = MAX_PASSENGER_DWELL_SEC;
 
 function renderVehicleStopProgression(bus) {
   const container = $('vehicleStopProgressionList');
@@ -2901,8 +2930,12 @@ function renderVehicleStopProgression(bus) {
     const dwellInfo = getStopDwellAndExchangeForVehicle(snaps, s.code);
     let dwellBadgeHtml = '';
     if (dwellInfo) {
-      const deltaSign = dwellInfo.deltaPax > 0 ? `+${dwellInfo.deltaPax}` : `${dwellInfo.deltaPax}`;
-      dwellBadgeHtml = `<span class="badge badge-secondary" style="font-size:0.68rem;padding:1px 5px" title="Observed dwell and passenger exchange">⏱️ ${dwellInfo.dwellMin}m dwell (${deltaSign} pax)</span>`;
+      if (dwellInfo.isDowntime) {
+        dwellBadgeHtml = `<span class="badge badge-muted" style="font-size:0.68rem;padding:1px 5px" title="Bus resting or on scheduled downtime / layover">💤 Layover / Rest (${dwellInfo.dwellMin}m)</span>`;
+      } else {
+        const deltaSign = dwellInfo.deltaPax > 0 ? `+${dwellInfo.deltaPax}` : `${dwellInfo.deltaPax}`;
+        dwellBadgeHtml = `<span class="badge badge-secondary" style="font-size:0.68rem;padding:1px 5px" title="Observed dwell and passenger exchange">⏱️ ${dwellInfo.dwellMin}m dwell (${deltaSign} pax)</span>`;
+      }
     }
 
     return `

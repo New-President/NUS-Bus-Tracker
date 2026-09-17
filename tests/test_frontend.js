@@ -1681,13 +1681,13 @@ test('stop dwell leaderboard dynamically adapts to incoming live dwell sessions 
   const initial = ui.computeStopBottlenecksAndCorridors();
   assert.strictEqual(initial.topStops[0].code, 'CLB', 'CLB is top stop by baseline');
 
-  // Simulate heavy surge dwell sessions observed at Computing COM3
+  // Simulate heavy surge dwell sessions observed at Computing COM3 (valid active boarding <= 300s)
   ui.STATE.stopDwellSessions.push(
-    { stopCode: 'COM3', dwellSec: 320, deltaPax: 75, timestamp: NOW - 60000, vehplate: 'PC1001A' },
+    { stopCode: 'COM3', dwellSec: 295, deltaPax: 75, timestamp: NOW - 60000, vehplate: 'PC1001A' },
     { stopCode: 'COM3', dwellSec: 290, deltaPax: 80, timestamp: NOW - 120000, vehplate: 'PC1002B' },
-    { stopCode: 'COM3', dwellSec: 310, deltaPax: 68, timestamp: NOW - 180000, vehplate: 'PC1003C' },
+    { stopCode: 'COM3', dwellSec: 285, deltaPax: 68, timestamp: NOW - 180000, vehplate: 'PC1003C' },
     { stopCode: 'COM3', dwellSec: 300, deltaPax: 72, timestamp: NOW - 240000, vehplate: 'PC1004D' },
-    { stopCode: 'COM3', dwellSec: 305, deltaPax: 70, timestamp: NOW - 300000, vehplate: 'PC1005E' }
+    { stopCode: 'COM3', dwellSec: 290, deltaPax: 70, timestamp: NOW - 300000, vehplate: 'PC1005E' }
   );
 
   const updated = ui.computeStopBottlenecksAndCorridors();
@@ -1700,6 +1700,34 @@ test('stop dwell leaderboard dynamically adapts to incoming live dwell sessions 
   const leaderboardHtml = ui.element('stopDwellLeaderboard').innerHTML;
   assert.ok(leaderboardHtml.includes('Computing (COM 3)'), 'Rendered UI reflects dynamic top bottleneck stop');
   assert.ok(leaderboardHtml.includes('#1'), 'Rank 1 badge rendered');
+});
+
+test('stop dwell leaderboard excludes resting, parked, and downtime buses exceeding 5 minutes', () => {
+  const ui = dashboard();
+
+  // Insert resting / downtime sessions (> 5 minutes or empty parked) for YIH and Opp Hon Sui Sen
+  ui.STATE.stopDwellSessions.push(
+    { stopCode: 'YIH', dwellSec: 632, deltaPax: 0, timestamp: NOW - 60000, vehplate: 'PC1009X' }, // 10m 32s resting
+    { stopCode: 'HSSML-OPP', dwellSec: 396, deltaPax: 12, timestamp: NOW - 120000, vehplate: 'PC1010Y' } // 6m 36s downtime
+  );
+
+  // Also simulate active bus dwell currently parked for > 5 min
+  ui.STATE.activeBusDwells.set('PC9999Z', {
+    stopCode: 'YIH',
+    startTime: NOW - 700000, // > 11 mins ago
+    startPax: 0,
+    lastPax: 0,
+    lastSeen: NOW,
+    isDowntime: true
+  });
+
+  const res = ui.computeStopBottlenecksAndCorridors();
+  // Ensure YIH and HSSML-OPP are not at top with > 5min dwell
+  const topStop = res.topStops[0];
+  assert.notStrictEqual(topStop.code, 'YIH', 'YIH resting bus does not dominate leaderboard');
+  for (const s of res.topStops) {
+    assert.ok(s.avgDwellSec <= 300, `Average dwell for ${s.name} (${s.avgDwellSec}s) does not exceed 5 minutes`);
+  }
 });
 
 
