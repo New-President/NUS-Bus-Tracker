@@ -16,7 +16,7 @@ const average = values => {
   const known = values.filter(value => numeric(value) !== null);
   return known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : null;
 };
-function smoothSeries(values, { bridgeSingleGaps = true, maxGapMinutes = 30, bucketMs = BUCKET_MS } = {}) {
+function smoothSeries(values, { bridgeSingleGaps = true, maxGapMinutes = 30, bucketMs = BUCKET_MS, windowRadiusMinutes = null } = {}) {
   const n = values.length;
   if (!n) return [];
 
@@ -70,8 +70,11 @@ function smoothSeries(values, { bridgeSingleGaps = true, maxGapMinutes = 30, buc
     }
   }
 
-  // 2. Pre-computed weights for rolling triangular smoothing window (radius: 15 minutes)
-  const halfWindow = Math.max(1, Math.round((maxGapMinutes / 2) * 60 * 1000 / bucketMs));
+  // 2. Pre-computed weights for rolling triangular smoothing window
+  const radiusMin = (windowRadiusMinutes !== null && windowRadiusMinutes !== undefined)
+    ? windowRadiusMinutes
+    : (maxGapMinutes / 2);
+  const halfWindow = Math.max(1, Math.round(radiusMin * 60 * 1000 / bucketMs));
   const weights = new Float64Array(2 * halfWindow + 1);
   const denom = halfWindow + 1;
   for (let d = -halfWindow; d <= halfWindow; d++) {
@@ -465,7 +468,7 @@ function resetTimelineZoom() {
 
 let _timelineSeriesCache = null;
 
-function getCachedTimelineSeries(start, count, isSmoothed) {
+function getCachedTimelineSeries(start, count, isSmoothed, smoothingMode = STATE.smoothing) {
   const selectedVeh = STATE.selectedTimelineVehicle;
   const activeRoutesKey = [...STATE.activeRoutes].sort().join(',');
   const currentView = STATE.currentView;
@@ -478,7 +481,8 @@ function getCachedTimelineSeries(start, count, isSmoothed) {
       _timelineSeriesCache.selectedVeh === selectedVeh &&
       _timelineSeriesCache.activeRoutesKey === activeRoutesKey &&
       _timelineSeriesCache.currentView === currentView &&
-      _timelineSeriesCache.isSmoothed === isSmoothed) {
+      _timelineSeriesCache.isSmoothed === isSmoothed &&
+      _timelineSeriesCache.smoothingMode === smoothingMode) {
     return _timelineSeriesCache;
   }
 
@@ -519,9 +523,10 @@ function getCachedTimelineSeries(start, count, isSmoothed) {
     (STATE.history24h.campusData || []).forEach(row => populate(row, 'CAMPUS_AVG'));
   }
   if (isSmoothed) {
+    const windowRadiusMinutes = (smoothingMode === 'trend') ? 15 : 2;
     for (const series of seriesMap.values()) {
-      series.values = smoothSeries(series.rawValues);
-      series.occupancies = smoothSeries(series.rawOccupancies);
+      series.values = smoothSeries(series.rawValues, { windowRadiusMinutes });
+      series.occupancies = smoothSeries(series.rawOccupancies, { windowRadiusMinutes });
     }
   }
   const valuesFor = series => currentView === 'exact' ? series.values : series.occupancies;
@@ -531,7 +536,7 @@ function getCachedTimelineSeries(start, count, isSmoothed) {
   const maxY = currentView === 'exact' ? Math.max(10, Math.ceil(Math.max(0, ...observed) / 10) * 10) : Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25);
 
   _timelineSeriesCache = {
-    historyRef, start, count, selectedVeh, activeRoutesKey, currentView, isSmoothed,
+    historyRef, start, count, selectedVeh, activeRoutesKey, currentView, isSmoothed, smoothingMode,
     seriesMap, rawObserved, observed, maxY
   };
   return _timelineSeriesCache;
@@ -549,7 +554,8 @@ function renderTimelineChart() {
     : { top: 30, right: 24, bottom: 52, left: 60 };
   const chartW = width - padding.left - padding.right, chartH = height - padding.top - padding.bottom;
   const rolling = STATE.timeMode === 'rolling';
-  const isSmoothed = STATE.smoothing === 'smoothed';
+  const isSmoothed = STATE.smoothing === 'smoothed' || STATE.smoothing === 'trend';
+  const smoothingMode = STATE.smoothing;
   const range = STATE.history24h.queryRange || {};
   const count = BUCKETS_COUNT;
   const lastIdx = count - 1;
@@ -587,7 +593,7 @@ function renderTimelineChart() {
     setText('timelineWindowBadge', `${startTimePart} – ${endTimePart} (${hoursSpan}h)`);
   }
 
-  const { seriesMap, rawObserved, observed, maxY } = getCachedTimelineSeries(start, count, isSmoothed);
+  const { seriesMap, rawObserved, observed, maxY } = getCachedTimelineSeries(start, count, isSmoothed, smoothingMode);
   const valuesFor = series => STATE.currentView === 'exact' ? series.values : series.occupancies;
   const rawValuesFor = series => STATE.currentView === 'exact' ? series.rawValues : series.rawOccupancies;
   const xAt = index => padding.left + (index - startIdx) / visibleCount * chartW;
@@ -689,6 +695,25 @@ function renderTimelineChart() {
         ctx.fill();
       }
     }
+
+    if (STATE.currentView === 'crowd') {
+      ctx.save?.();
+      for (let index = startIdx; index <= endIdx; index++) {
+        const rawOcc = series.rawOccupancies[index];
+        const val = values[index];
+        if (rawOcc !== null && rawOcc >= 95 && val !== null) {
+          const x = xAt(index), y = yAt(val);
+          ctx.beginPath();
+          ctx.arc(x, y, isMobile ? 3.5 : 4.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#ef4444';
+          ctx.fill();
+          ctx.strokeStyle = '#fee2e2';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
+      }
+      ctx.restore?.();
+    }
   }
   if (!observed.length) {
     ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'center'; ctx.font = isMobile ? '12px sans-serif' : '14px sans-serif';
@@ -701,12 +726,17 @@ function renderTimelineChart() {
   ctx.restore?.();
 
   setText('panelTimelineTitle', rolling ? 'Rolling 24-Hour Shuttle Readings' : `Shuttle Readings · ${STATE.selectedDate}`);
-  const subtitleSuffix = isSmoothed
-    ? '30-minute rolling average · Gaps indicate extended downtime'
-    : '1-minute intervals · Gaps indicate missing readings';
+  let subtitleSuffix;
+  if (STATE.smoothing === 'trend') {
+    subtitleSuffix = '30-minute macro trend · Gaps indicate extended downtime';
+  } else if (STATE.smoothing === 'smoothed') {
+    subtitleSuffix = '5-minute responsive rolling average · Preserves peak capacity';
+  } else {
+    subtitleSuffix = '1-minute intervals · Gaps indicate missing readings';
+  }
   setText('panelTimelineSubtitle', `${buckets[startIdx].label} → ${buckets[endIdx].label} SGT · ${subtitleSuffix}`);
   setText('chartDescription', STATE.errors.history ? `History unavailable: ${STATE.errors.history}` : `${rawObserved.length} plotted readings in selected routes. Passenger counts are averages per bus; missing values remain unknown. All times are SGT.`);
-  canvas._chartMeta = { padding, chartW, chartH, seriesMap, buckets, isSmoothed, startIdx, endIdx, visibleCount };
+  canvas._chartMeta = { padding, chartW, chartH, seriesMap, buckets, isSmoothed, smoothingMode, startIdx, endIdx, visibleCount };
 }
 
 function positionChartTooltip(tooltip, canvas, clientX, clientY) {
@@ -766,9 +796,23 @@ function setupChartInteractivity() {
       STATE.hoveredIndex = index;
       const rows = [...meta.seriesMap.values()].filter(series => series.values[index] !== null || series.occupancies[index] !== null);
       tooltip.innerHTML = `<strong>${escapeHtml(meta.buckets[index].label)} SGT</strong>${rows.length ? rows.map(series => {
-        const showRaw = meta.isSmoothed && series.rawValues[index] !== null && series.rawValues[index] !== series.values[index];
-        const rawText = showRaw ? ` <span class="tooltip-raw">(raw: ${numberLabel(series.rawValues[index])})</span>` : '';
-        return `<div class="tooltip-row"><span style="color:${series.color}">${escapeHtml(series.code === 'CAMPUS_AVG' ? 'Observed Average' : series.code)}</span><span>${numberLabel(series.values[index])} pax · ${percentLabel(series.occupancies[index])}${rawText}</span></div>`;
+        let rawDetail = '';
+        if (STATE.currentView === 'crowd') {
+          const rawOcc = series.rawOccupancies[index];
+          const smoothOcc = series.occupancies[index];
+          if (rawOcc !== null && rawOcc >= 95) {
+            rawDetail = ` <span class="tooltip-raw" style="color:#ef4444;font-weight:700">(peak: ${numberLabel(rawOcc)}% 🚨)</span>`;
+          } else if (meta.isSmoothed && rawOcc !== null && Math.abs(rawOcc - (smoothOcc ?? 0)) >= 2) {
+            rawDetail = ` <span class="tooltip-raw">(raw: ${numberLabel(rawOcc)}%)</span>`;
+          }
+        } else {
+          const rawVal = series.rawValues[index];
+          const smoothVal = series.values[index];
+          if (meta.isSmoothed && rawVal !== null && Math.abs(rawVal - (smoothVal ?? 0)) >= 0.5) {
+            rawDetail = ` <span class="tooltip-raw">(raw: ${numberLabel(rawVal)})</span>`;
+          }
+        }
+        return `<div class="tooltip-row"><span style="color:${series.color}">${escapeHtml(series.code === 'CAMPUS_AVG' ? 'Observed Average' : series.code)}</span><span>${numberLabel(series.values[index])} pax · ${percentLabel(series.occupancies[index])}${rawDetail}</span></div>`;
       }).join('') : '<p>No reported readings in this interval</p>'}`;
     }
     tooltip.style.display = 'block';

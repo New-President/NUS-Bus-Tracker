@@ -268,7 +268,7 @@ test('smoothSeries reduces variance and bridges isolated single gaps while keepi
   assert.equal(overnightSmoothed[3], null);
 });
 
-test('smoothing toggle button switches between smoothed and raw view modes', async () => {
+test('smoothing toggle button switches between smoothed (5m), trend (30m), and raw view modes', async () => {
   const ui = dashboard();
   ui.setupFilters();
   const end = Math.floor(NOW / INTERVAL) * INTERVAL;
@@ -278,12 +278,22 @@ test('smoothing toggle button switches between smoothed and raw view modes', asy
     { bucket_ts: end, avg_ridership: 30, avg_occupancy_pct: null }
   ] };
 
-  // Default is smoothed
+  // Default is smoothed (5m)
   assert.equal(ui.STATE.smoothing, 'smoothed');
   ui.renderTimelineChart();
-  assert.match(ui.element('panelTimelineSubtitle').textContent, /30-minute rolling average/);
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /5-minute responsive rolling average · Preserves peak capacity/);
 
-  // Switch to raw
+  // Switch to trend (30m)
+  await ui.element('smoothingToggleGroup').dispatch('click', {
+    target: {
+      dataset: { smoothing: 'trend' },
+      closest: selector => selector === 'button' ? { dataset: { smoothing: 'trend' } } : null
+    }
+  });
+  assert.equal(ui.STATE.smoothing, 'trend');
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /30-minute macro trend/);
+
+  // Switch to raw (1m)
   await ui.element('smoothingToggleGroup').dispatch('click', {
     target: {
       dataset: { smoothing: 'raw' },
@@ -293,7 +303,7 @@ test('smoothing toggle button switches between smoothed and raw view modes', asy
   assert.equal(ui.STATE.smoothing, 'raw');
   assert.match(ui.element('panelTimelineSubtitle').textContent, /1-minute intervals/);
 
-  // Switch back to smoothed
+  // Switch back to smoothed (5m)
   await ui.element('smoothingToggleGroup').dispatch('click', {
     target: {
       dataset: { smoothing: 'smoothed' },
@@ -301,7 +311,59 @@ test('smoothing toggle button switches between smoothed and raw view modes', asy
     }
   });
   assert.equal(ui.STATE.smoothing, 'smoothed');
-  assert.match(ui.element('panelTimelineSubtitle').textContent, /30-minute rolling average/);
+  assert.match(ui.element('panelTimelineSubtitle').textContent, /5-minute responsive rolling average · Preserves peak capacity/);
+});
+
+test('5-minute smoothing preserves 100% capacity crush load peaks while 30-minute macro smoothing heavily flattens them', () => {
+  const ui = dashboard();
+  // Simulate 60 minutes of data with a 4-minute 100% crush load peak surrounded by 40% load
+  const rawOccupancy = Array(60).fill(40);
+  for (let m = 28; m <= 31; m++) rawOccupancy[m] = 100;
+
+  // 1. 5-minute smoothing (windowRadiusMinutes = 2)
+  const smoothed5m = ui.smoothSeries(rawOccupancy, { windowRadiusMinutes: 2 });
+  const peak5m = Math.max(...smoothed5m);
+  // 5m smoothing preserves responsive peak >= 90% (specifically 93.3%)
+  assert.ok(peak5m >= 90, `Expected 5m smoothed peak >= 90%, got ${peak5m}%`);
+
+  // A 5-minute surge reaches full 100%
+  const full5mOccupancy = Array(60).fill(40);
+  for (let m = 28; m <= 32; m++) full5mOccupancy[m] = 100;
+  const smoothedFull5m = ui.smoothSeries(full5mOccupancy, { windowRadiusMinutes: 2 });
+  assert.equal(Math.max(...smoothedFull5m), 100, 'A 5-minute surge reaches full 100% on smoothed graph');
+
+  // 2. 30-minute macro smoothing (windowRadiusMinutes = 15)
+  const smoothed30m = ui.smoothSeries(rawOccupancy, { windowRadiusMinutes: 15 });
+  const peak30m = Math.max(...smoothed30m);
+  // 30m macro smoothing heavily flattens the peak to below 75%
+  assert.ok(peak30m < 75, `Expected 30m smoothed peak < 75%, got ${peak30m}%`);
+});
+
+test('chart tooltip displays peak capacity alert when bus reaches full crowd level', () => {
+  const ui = dashboard();
+  ui.STATE.currentView = 'crowd';
+  ui.STATE.activeRoutes = new Set(['A1']);
+  const end = Math.floor(NOW / 60000) * 60000;
+  const start = end - 1439 * 60000;
+  const peakIdx = 500;
+  const peakTs = start + peakIdx * 60000;
+  ui.STATE.history24h = {
+    queryRange: { end: NOW },
+    routeData: [
+      { route_code: 'A1', bucket_ts: peakTs, avg_ridership: 55, avg_occupancy_pct: 100 }
+    ],
+    campusData: []
+  };
+
+  ui.renderTimelineChart();
+  const canvas = ui.element('timelineChart');
+  const tooltip = ui.element('chartTooltip');
+  assert.ok(canvas._chartMeta);
+  // Directly simulate pointer hovering over the peak index
+  ui.STATE.hoveredIndex = peakIdx;
+  const series = canvas._chartMeta.seriesMap.get('A1');
+  assert.ok(series);
+  assert.equal(series.rawOccupancies[peakIdx], 100);
 });
 
 test('timeline chart scales responsively and avoids X-axis label collision on mobile', async () => {
