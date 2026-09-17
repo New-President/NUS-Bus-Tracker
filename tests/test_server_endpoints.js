@@ -112,7 +112,13 @@ test('public dashboard reads remain empty until actual observations arrive and n
 
 test('static assets are served and encoded path traversal cannot read repository files', async t => {
   const { request } = await fixture(t);
-  for (const [pathname, type] of [['/', 'text/html'], ['/styles.css', 'text/css'], ['/app.js', 'javascript']]) {
+  for (const [pathname, type] of [
+    ['/', 'text/html'],
+    ['/styles.css', 'text/css'],
+    ['/app.js', 'javascript'],
+    ['/_vercel/insights/script.js', 'javascript'],
+    ['/_vercel/speed-insights/script.js', 'javascript']
+  ]) {
     const res = await request(pathname);
     assert.equal(res.status, 200, pathname);
     assert.ok(res.headers['content-type'].includes(type));

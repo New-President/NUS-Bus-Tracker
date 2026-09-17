@@ -17,7 +17,9 @@ const API_METHODS = {
   '/api/poll-now': 'POST', '/api/settings': 'POST', '/api/clear-all': 'POST'
 };
 const STATIC_FILES = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'],
-  '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'application/javascript'] };
+  '/styles.css': ['styles.css', 'text/css'], '/app.js': ['app.js', 'application/javascript'],
+  '/_vercel/insights/script.js': ['_vercel/insights/script.js', 'application/javascript'],
+  '/_vercel/speed-insights/script.js': ['_vercel/speed-insights/script.js', 'application/javascript'] };
 
 class RequestError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -215,13 +217,17 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
           'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': Buffer.byteLength(csv) });
         return res.end(csv);
       }
-      if (!pathname.startsWith('/api') && ['GET', 'HEAD'].includes(method) && !hosted(env)) {
+      if (!pathname.startsWith('/api') && ['GET', 'HEAD', 'POST'].includes(method) && !hosted(env)) {
         const asset = STATIC_FILES[pathname];
-        if (asset) {
+        if (asset && ['GET', 'HEAD'].includes(method)) {
           const content = await fs.readFile(path.join(PUBLIC_DIR, asset[0]));
           res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8`, 'Content-Length': content.length,
             'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' });
           return res.end(method === 'HEAD' ? undefined : content);
+        }
+        if (pathname.startsWith('/_vercel/')) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
+          return res.end('{"ok":true}');
         }
       }
       return sendJson(res, 404, { error: 'Not found.' });
