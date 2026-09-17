@@ -183,7 +183,7 @@ function dashboard() {
     navigateTimeline, zoomTimeline, resetTimelineZoom, getCachedTimelineSeries,
     computeRouteHeadways, computeAllRouteHeadways, computeVehicleDutyCycle,
     getVehicleDutySummary, analyzeVehicleCycles, getStopDwellAndExchangeForVehicle,
-    computeStopBottlenecksAndCorridors, detectLectureSurgeWindows,
+    computeStopBottlenecksAndCorridors, detectLectureSurgeWindows, isCurrentTimeInRange,
     extractDwellSessionsFromSnapshots,
     renderOptimizerView, renderTransitInsights
   };`, sandbox, { filename: 'public/app.js' });
@@ -1791,6 +1791,101 @@ test('stop dwell leaderboard excludes resting, parked, and downtime buses exceed
     assert.ok(s.avgDwellSec <= 300, `Average dwell for ${s.name} (${s.avgDwellSec}s) does not exceed 5 minutes`);
   }
 });
+
+test('detectLectureSurgeWindows falls back to baseline heuristics when telemetry is empty', () => {
+  const ui = dashboard();
+  const surges = ui.detectLectureSurgeWindows([], []);
+
+  assert.equal(surges.length, 6, 'Six lecture windows defined');
+  assert.equal(surges[0].timeRange, '08:25 – 08:45 SGT');
+  assert.equal(surges[0].isEmpirical, false, 'Without telemetry, isEmpirical is false');
+  assert.equal(surges[0].observedSummary, 'Baseline timetable schedule');
+  assert.equal(surges[0].peakIncrease, '+38% crowd', 'Baseline heuristic preserved');
+  assert.ok(surges[0].desc.includes('Morning Lecture Rush'));
+  assert.ok(surges[0].tip.includes('Board before 08:20'));
+});
+
+test('detectLectureSurgeWindows dynamically computes empirical surge from campus telemetry', () => {
+  const ui = dashboard();
+
+  // Create daytime baseline readings (30% occupancy) across daytime hours
+  const campusData = [];
+  const baseDayTs = Date.parse('2026-09-10T01:00:00Z'); // 09:00 SGT
+  for (let i = 0; i < 20; i++) {
+    campusData.push({
+      bucket_ts: baseDayTs + i * 5 * 60 * 1000,
+      avg_occupancy_pct: 30,
+      avg_ridership: 15
+    });
+  }
+
+  // Inject intense surge readings (80% occupancy) during 08:25-08:45 SGT (00:25-00:45 UTC)
+  const surgeTs = Date.parse('2026-09-10T00:30:00Z'); // 08:30 SGT
+  for (let i = 0; i < 8; i++) {
+    campusData.push({
+      bucket_ts: surgeTs + i * 60 * 1000,
+      avg_occupancy_pct: 80,
+      avg_ridership: 45
+    });
+  }
+
+  const surges = ui.detectLectureSurgeWindows([], campusData);
+  const morningRush = surges[0];
+
+  assert.equal(morningRush.isEmpirical, true, 'Surge is marked empirical when readings match window');
+  assert.equal(morningRush.sampleCount, 8, '8 readings detected in morning rush window');
+  assert.equal(morningRush.observedAvgOccupancy, 80, 'Observed average occupancy is 80%');
+  assert.ok(morningRush.observedSummary.includes('80% avg load · 8 readings'), 'Summary reports empirical load and count');
+
+  // Verify dynamic surge percentage reflects the empirical spike over 30% baseline
+  const surgeNum = parseInt(morningRush.peakIncrease.replace(/[^\d]/g, ''), 10);
+  assert.ok(surgeNum > 50, `Dynamic surge percentage (${surgeNum}%) reflects empirical spike`);
+});
+
+test('detectLectureSurgeWindows dynamically detects active window, live fleet load, and headway alerts', () => {
+  const ui = dashboard();
+
+  // Reference time: 10:00 SGT (02:00 UTC), inside 09:50 - 10:15 window
+  const simTime = Date.parse('2026-09-10T02:00:00Z');
+
+  ui.STATE.liveBuses = [
+    { route_code: 'A1', occupancy: 0.85, lat: 1.295, lng: 103.774 },
+    { route_code: 'D1', occupancy: 0.75, lat: 1.296, lng: 103.775 }
+  ];
+
+  // Simulate bunching detected on Service A1
+  ui.STATE.routeHeadways = new Map([
+    ['A1', { bunchedPlates: new Set(['PC1001A']) }]
+  ]);
+
+  const surges = ui.detectLectureSurgeWindows([], [], simTime);
+  const transition1000 = surges[1];
+
+  assert.equal(transition1000.isActive, true, '10:00 window is active at 10:00 SGT');
+  assert.equal(transition1000.liveOccupancy, 80, 'Live fleet occupancy accurately calculated (average of 85% and 75%)');
+  assert.ok(transition1000.tip.includes('Active Surge Alert: Bunching detected on Service A1'), 'Dynamic commuter tip reflects active bunching advisory');
+
+  // Other window should be inactive
+  assert.equal(surges[0].isActive, false, 'Morning rush is not active at 10:00 SGT');
+});
+
+test('renderTransitInsights renders dynamic metric strips and updates panel header badge', () => {
+  const ui = dashboard();
+
+  ui.STATE.analytics = { campusHourly: [] };
+  ui.STATE.history24h = { campusData: [] };
+
+  ui.renderTransitInsights();
+
+  const surgeHtml = ui.element('lectureSurgeContainer').innerHTML;
+  assert.ok(surgeHtml.includes('surge-metric-strip'), 'Contains metric strip element');
+  assert.ok(surgeHtml.includes('pill-baseline'), 'Renders baseline indicator pill when no telemetry');
+
+  const alertBadge = ui.element('lectureSurgeAlertBadge');
+  assert.ok(alertBadge.textContent.length > 0, 'Header badge text is populated');
+  assert.ok(alertBadge.className.includes('badge'), 'Header badge class applied');
+});
+
 
 
 

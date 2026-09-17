@@ -1100,13 +1100,52 @@ function renderTransitInsights() {
 
   if (surgeContainer) {
     const surges = detectLectureSurgeWindows(STATE.analytics.campusHourly, STATE.history24h.campusData);
+
+    const surgeAlertBadge = $('lectureSurgeAlertBadge');
+    if (surgeAlertBadge) {
+      const activeSurge = surges.find(s => s.isActive);
+      if (activeSurge) {
+        surgeAlertBadge.className = 'badge badge-warning';
+        surgeAlertBadge.textContent = '🔴 Active Surge Window';
+        surgeAlertBadge.style.animation = 'pulse-bunched 2s infinite';
+      } else {
+        surgeAlertBadge.style.animation = '';
+        const sgDate = new Date(Date.now() + 8 * 3600 * 1000);
+        const nowMin = sgDate.getUTCHours() * 60 + sgDate.getUTCMinutes();
+        const nextWindow = surges.find(s => {
+          const [startH, startM] = s.timeRange.slice(0, 5).split(':').map(Number);
+          return (startH * 60 + startM) > nowMin;
+        });
+        if (nextWindow) {
+          surgeAlertBadge.className = 'badge badge-secondary';
+          const startTime = nextWindow.timeRange.slice(0, 5);
+          surgeAlertBadge.textContent = `Next Wave: ${startTime} SGT`;
+        } else {
+          surgeAlertBadge.className = 'badge badge-success';
+          surgeAlertBadge.textContent = 'Day Waves Complete';
+        }
+      }
+    }
+
     surgeContainer.innerHTML = surges.map(s => {
-      const liveBadge = s.isActive ? '<span class="badge badge-warning" style="animation:pulse-bunched 2s infinite">🔴 Active Window Now</span>' : '';
+      let liveBadge = '';
+      if (s.isActive) {
+        const liveCrowdText = s.liveOccupancy !== null ? ` · ${s.liveOccupancy}% Live Crowd` : '';
+        liveBadge = `<span class="badge badge-warning" style="animation:pulse-bunched 2s infinite">🔴 Active Window Now${escapeHtml(liveCrowdText)}</span>`;
+      }
+
+      const empiricalBadge = s.isEmpirical
+        ? `<span class="surge-pill-tag pill-empirical">📊 ${escapeHtml(s.observedSummary)}</span>`
+        : `<span class="surge-pill-tag pill-baseline">⏱️ ${escapeHtml(s.observedSummary)}</span>`;
+
       return `
         <div class="surge-window-card ${s.isActive ? 'is-active-window' : ''}">
           <div class="surge-header">
             <span class="surge-time">🕒 ${escapeHtml(s.timeRange)}</span>
             ${liveBadge || `<span class="surge-magnitude">${escapeHtml(s.peakIncrease)}</span>`}
+          </div>
+          <div class="surge-metric-strip">
+            ${empiricalBadge}
           </div>
           <div class="surge-desc">${escapeHtml(s.desc)}</div>
           <div class="surge-tip">💡 <strong>Commuter Tip:</strong> ${escapeHtml(s.tip)}</div>
@@ -2793,59 +2832,186 @@ function computeStopBottlenecksAndCorridors() {
   return { corridors, topStops, delayedCount };
 }
 
-function isCurrentTimeInRange(startHour, startMin, endHour, endMin) {
-  const sgDate = new Date(Date.now() + 8 * 3600 * 1000);
+function isCurrentTimeInRange(startHour, startMin, endHour, endMin, refTimeMs = Date.now()) {
+  const sgDate = new Date(refTimeMs + 8 * 3600 * 1000);
   const nowMin = sgDate.getUTCHours() * 60 + sgDate.getUTCMinutes();
   const startTotal = startHour * 60 + startMin;
   const endTotal = endHour * 60 + endMin;
   return nowMin >= startTotal && nowMin <= endTotal;
 }
 
-function detectLectureSurgeWindows(campusHourly, campusData) {
-  return [
+function detectLectureSurgeWindows(campusHourly, campusData, refTimeMs = Date.now()) {
+  const windowSpecs = [
     {
+      id: 'morning_rush',
+      startHour: 8, startMin: 25, endHour: 8, endMin: 45,
       timeRange: '08:25 – 08:45 SGT',
-      peakIncrease: '+38% crowd',
+      baseIncrease: 38,
       desc: 'Morning Lecture Rush: Science (LT27), Computing (COM3), and Business (BIZ2) arrival wave.',
-      tip: 'Board before 08:20 at Kent Ridge MRT to secure a seat.',
-      isActive: isCurrentTimeInRange(8, 25, 8, 45)
+      baseTip: 'Board before 08:20 at Kent Ridge MRT to secure a seat.',
+      relevantRoutes: ['A1', 'D1', 'D2']
     },
     {
+      id: 'transition_1000',
+      startHour: 9, startMin: 50, endHour: 10, endMin: 15,
       timeRange: '09:50 – 10:15 SGT',
-      peakIncrease: '+45% crowd',
+      baseIncrease: 45,
       desc: '10:00 Lecture Transition: Major campus cross-transit between UTown, Central Library, and Arts.',
-      tip: 'Buses A1 and D1 experience bunching during this window.',
-      isActive: isCurrentTimeInRange(9, 50, 10, 15)
+      baseTip: 'Buses A1 and D1 experience bunching during this window.',
+      relevantRoutes: ['A1', 'D1']
     },
     {
+      id: 'lunch_wave',
+      startHour: 11, startMin: 50, endHour: 12, endMin: 20,
       timeRange: '11:50 – 12:20 SGT',
-      peakIncrease: '+52% crowd',
+      baseIncrease: 52,
       desc: 'Midday Lunch Wave: Heavy boarding towards UTown Flavours and Fine Foods food courts.',
-      tip: 'Expect 2+ minute dwell times at Central Library and Museum stops.',
-      isActive: isCurrentTimeInRange(11, 50, 12, 20)
+      baseTip: 'Expect 2+ minute dwell times at Central Library and Museum stops.',
+      relevantRoutes: ['D1', 'A1', 'A2']
     },
     {
+      id: 'afternoon_switch',
+      startHour: 13, startMin: 50, endHour: 14, endMin: 15,
       timeRange: '13:50 – 14:15 SGT',
-      peakIncrease: '+40% crowd',
+      baseIncrease: 40,
       desc: '14:00 Afternoon Lecture Switch: Bi-directional flow between Science and Engineering.',
-      tip: 'Service A2 offers quicker turnaround than A1 along Lower Kent Ridge Rd.',
-      isActive: isCurrentTimeInRange(13, 50, 14, 15)
+      baseTip: 'Service A2 offers quicker turnaround than A1 along Lower Kent Ridge Rd.',
+      relevantRoutes: ['A2', 'A1']
     },
     {
+      id: 'transition_1600',
+      startHour: 15, startMin: 50, endHour: 16, endMin: 15,
       timeRange: '15:50 – 16:15 SGT',
-      peakIncrease: '+35% crowd',
+      baseIncrease: 35,
       desc: '16:00 Transition Window: Gradual surge towards central campus and library.',
-      tip: 'Service D2 usually operates with lowest headway variance during this period.',
-      isActive: isCurrentTimeInRange(15, 50, 16, 15)
+      baseTip: 'Service D2 usually operates with lowest headway variance during this period.',
+      relevantRoutes: ['D2']
     },
     {
+      id: 'evening_departure',
+      startHour: 17, startMin: 45, endHour: 18, endMin: 30,
       timeRange: '17:45 – 18:30 SGT',
-      peakIncrease: '+60% crowd',
+      baseIncrease: 60,
       desc: 'Evening Campus Departure: Massive exodus toward Kent Ridge MRT and Haw Par Villa.',
-      tip: 'Peak booster vehicles deployed; observe headway spacing on Map view.',
-      isActive: isCurrentTimeInRange(17, 45, 18, 30)
+      baseTip: 'Peak booster vehicles deployed; observe headway spacing on Map view.',
+      relevantRoutes: ['A1', 'D2', 'K']
     }
   ];
+
+  function getSingaporeMinute(row) {
+    if (numeric(row?.bucket_ts) !== null) {
+      const d = new Date(Number(row.bucket_ts) + 8 * 3600 * 1000);
+      return d.getUTCHours() * 60 + d.getUTCMinutes();
+    }
+    if (typeof row?.time_str === 'string' && row.time_str.includes(':')) {
+      const parts = row.time_str.split(':').map(Number);
+      if (!isNaN(parts[0]) && !isNaN(parts[1])) return parts[0] * 60 + parts[1];
+    }
+    return null;
+  }
+
+  const validBuckets = (Array.isArray(campusData) ? campusData : []).filter(r => numeric(r?.avg_occupancy_pct) !== null);
+
+  let baselineOccupancy = 30;
+  if (validBuckets.length > 0) {
+    const daytime = validBuckets.filter(r => {
+      const m = getSingaporeMinute(r);
+      return m !== null && m >= 7 * 60 && m <= 21 * 60;
+    });
+    const pool = daytime.length >= 5 ? daytime : validBuckets;
+    baselineOccupancy = pool.reduce((sum, r) => sum + Number(r.avg_occupancy_pct), 0) / pool.length;
+  } else if (Array.isArray(campusHourly) && campusHourly.length > 0) {
+    const validHours = campusHourly.filter(r => numeric(r?.avg_occupancy_pct) !== null);
+    if (validHours.length > 0) {
+      const daytimeHours = validHours.filter(r => r.hour >= 7 && r.hour <= 21);
+      const pool = daytimeHours.length > 0 ? daytimeHours : validHours;
+      baselineOccupancy = pool.reduce((sum, r) => sum + Number(r.avg_occupancy_pct), 0) / pool.length;
+    }
+  }
+
+  let liveOccupancy = null;
+  const liveList = (typeof STATE !== 'undefined' && Array.isArray(STATE.liveBuses)) ? STATE.liveBuses : [];
+  if (liveList.length > 0) {
+    const busesWithOccupancy = liveList.filter(b => numeric(b.occupancy) !== null);
+    if (busesWithOccupancy.length > 0) {
+      const sum = busesWithOccupancy.reduce((acc, b) => acc + (b.occupancy * 100), 0);
+      liveOccupancy = Math.round(sum / busesWithOccupancy.length);
+    }
+  }
+
+  return windowSpecs.map(spec => {
+    const startTotal = spec.startHour * 60 + spec.startMin;
+    const endTotal = spec.endHour * 60 + spec.endMin;
+    const isActive = isCurrentTimeInRange(spec.startHour, spec.startMin, spec.endHour, spec.endMin, refTimeMs);
+
+    const matching = validBuckets.filter(r => {
+      const m = getSingaporeMinute(r);
+      return m !== null && m >= startTotal && m <= endTotal;
+    });
+
+    let displaySurgePct = spec.baseIncrease;
+    let observedSummary = 'Baseline timetable schedule';
+    let isEmpirical = false;
+    let observedAvgOccupancy = null;
+    let sampleCount = 0;
+
+    if (matching.length > 0) {
+      sampleCount = matching.length;
+      observedAvgOccupancy = Math.round(matching.reduce((acc, r) => acc + Number(r.avg_occupancy_pct), 0) / sampleCount);
+      const effBase = Math.max(15, baselineOccupancy);
+      const rawSurge = Math.round(((observedAvgOccupancy - effBase) / effBase) * 100);
+      const weight = Math.min(1.0, sampleCount / 6);
+      displaySurgePct = Math.max(5, Math.round(rawSurge * weight + spec.baseIncrease * (1 - weight)));
+      observedSummary = `${observedAvgOccupancy}% avg load · ${sampleCount} readings`;
+      isEmpirical = true;
+    } else {
+      const hourlyMatch = (Array.isArray(campusHourly) ? campusHourly : []).find(h => h.hour === spec.startHour);
+      if (hourlyMatch && numeric(hourlyMatch.avg_occupancy_pct) !== null) {
+        observedAvgOccupancy = Math.round(Number(hourlyMatch.avg_occupancy_pct));
+        const effBase = Math.max(15, baselineOccupancy);
+        const rawSurge = Math.round(((observedAvgOccupancy - effBase) / effBase) * 100);
+        const hSamples = Number(hourlyMatch.occupancy_sample_count) || 1;
+        const weight = Math.min(0.6, hSamples / 10);
+        displaySurgePct = Math.max(5, Math.round(rawSurge * weight + spec.baseIncrease * (1 - weight)));
+        observedSummary = `${observedAvgOccupancy}% avg load · hourly`;
+        isEmpirical = true;
+        sampleCount = hSamples;
+      }
+    }
+
+    let dynamicTip = spec.baseTip;
+    if (typeof STATE !== 'undefined') {
+      const bunchedRoutes = [];
+      if (STATE.routeHeadways) {
+        for (const rCode of spec.relevantRoutes) {
+          const hw = STATE.routeHeadways.get(rCode);
+          if (hw && hw.bunchedPlates && hw.bunchedPlates.size > 0) {
+            bunchedRoutes.push(rCode);
+          }
+        }
+      }
+
+      if (isActive && bunchedRoutes.length > 0) {
+        dynamicTip = `Active Surge Alert: Bunching detected on Service ${bunchedRoutes.join(', ')}. Check Headway spacing on Map.`;
+      } else if (isActive && liveOccupancy !== null && liveOccupancy >= 70) {
+        dynamicTip = `High Load Alert: Fleet at ${liveOccupancy}% capacity. Board immediately at origin stops to secure seats.`;
+      }
+    }
+
+    return {
+      id: spec.id,
+      timeRange: spec.timeRange,
+      peakIncrease: `+${displaySurgePct}% crowd`,
+      desc: spec.desc,
+      tip: dynamicTip,
+      isActive,
+      isEmpirical,
+      observedSummary,
+      observedAvgOccupancy,
+      sampleCount,
+      liveOccupancy: isActive ? liveOccupancy : null
+    };
+  });
 }
 
 const globalRoot = typeof window !== 'undefined' ? window : globalThis;
@@ -2866,6 +3032,7 @@ globalRoot.analyzeVehicleCycles = analyzeVehicleCycles;
 globalRoot.getStopDwellAndExchangeForVehicle = getStopDwellAndExchangeForVehicle;
 globalRoot.computeStopBottlenecksAndCorridors = computeStopBottlenecksAndCorridors;
 globalRoot.detectLectureSurgeWindows = detectLectureSurgeWindows;
+globalRoot.isCurrentTimeInRange = isCurrentTimeInRange;
 globalRoot.MAX_PASSENGER_DWELL_SEC = MAX_PASSENGER_DWELL_SEC;
 
 function renderVehicleStopProgression(bus) {
