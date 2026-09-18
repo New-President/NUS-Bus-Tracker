@@ -182,7 +182,7 @@ function dashboard() {
     updateVehicleMovement, resolveVehicleRouteProgression,
     navigateTimeline, zoomTimeline, resetTimelineZoom, getCachedTimelineSeries,
     computeRouteHeadways, computeAllRouteHeadways, computeVehicleDutyCycle,
-    getVehicleDutySummary, analyzeVehicleCycles, getStopDwellAndExchangeForVehicle,
+    getVehicleDutySummary, getSingaporeDayBounds, analyzeVehicleCycles, getStopDwellAndExchangeForVehicle,
     computeStopBottlenecksAndCorridors, detectLectureSurgeWindows, isCurrentTimeInRange,
     extractDwellSessionsFromSnapshots,
     renderOptimizerView, renderTransitInsights
@@ -1884,6 +1884,89 @@ test('renderTransitInsights renders dynamic metric strips and updates panel head
   const alertBadge = ui.element('lectureSurgeAlertBadge');
   assert.ok(alertBadge.textContent.length > 0, 'Header badge text is populated');
   assert.ok(alertBadge.className.includes('badge'), 'Header badge class applied');
+});
+
+test('getSingaporeDayBounds correctly computes 12:00 AM midnight SGT boundaries', () => {
+  const ui = dashboard();
+  const bounds = ui.getSingaporeDayBounds('2026-09-18');
+  assert.equal(bounds.dateStr, '2026-09-18');
+  // 2026-09-18T00:00:00+08:00 is 2026-09-17T16:00:00Z
+  const expectedStart = Date.parse('2026-09-17T16:00:00Z');
+  assert.equal(bounds.startMs, expectedStart);
+  assert.equal(bounds.endMs, expectedStart + 86400000);
+});
+
+test('getVehicleDutySummary resets active minutes and distance at 12:00 AM midnight SGT', () => {
+  const ui = dashboard();
+  const targetDate = '2026-09-18';
+  const midnightSgt = Date.parse('2026-09-17T16:00:00Z'); // 12:00 AM SGT on Sept 18
+
+  // Telemetry from yesterday evening (2026-09-17 18:00 to 22:00 SGT) -> 100 buckets
+  // Telemetry from today morning (2026-09-18 07:00 to 08:00 SGT) -> 60 buckets
+  const yesterdayTs = midnightSgt - 4 * 3600 * 1000;
+  const todayTs = midnightSgt + 7 * 3600 * 1000;
+
+  ui.STATE.history24h = {
+    vehicleData: [
+      ...Array.from({ length: 100 }, (_, i) => ({
+        bucket_ts: yesterdayTs + i * 60000,
+        vehplate: 'PC9999Z',
+        route_code: 'A1'
+      })),
+      ...Array.from({ length: 60 }, (_, i) => ({
+        bucket_ts: todayTs + i * 60000,
+        vehplate: 'PC9999Z',
+        route_code: 'A1'
+      }))
+    ]
+  };
+
+  // When querying for today (targetDate), only 60 buckets should be counted (not 160)
+  const duty = ui.getVehicleDutySummary('PC9999Z', targetDate);
+  assert.equal(duty.activeMinutes, 60, 'Only counts minutes after 12:00 AM midnight');
+  assert.equal(duty.activeHoursLabel, '1h 0m');
+  assert.equal(duty.distanceKm, Math.round(60 * 0.18 * 10) / 10, 'Distance only includes today telemetry');
+
+  // If vehicle only operated yesterday
+  ui.STATE.history24h = {
+    vehicleData: [
+      ...Array.from({ length: 100 }, (_, i) => ({
+        bucket_ts: yesterdayTs + i * 60000,
+        vehplate: 'PC8888Y',
+        route_code: 'D1'
+      }))
+    ]
+  };
+  const offDuty = ui.getVehicleDutySummary('PC8888Y', targetDate);
+  assert.equal(offDuty.activeMinutes, 0, 'Resets to 0 active minutes for today');
+  assert.equal(offDuty.distanceKm, 0, 'Resets to 0 km distance for today');
+  assert.equal(offDuty.profile, 'Standby / Off-duty');
+});
+
+test('getVehicleDutySummary with snapshots cache excludes snapshots prior to 12:00 AM midnight SGT', () => {
+  const ui = dashboard();
+  const targetDate = '2026-09-18';
+  const midnightSgt = Date.parse('2026-09-17T16:00:00Z');
+
+  // Cache snapshots: 50 yesterday, 30 today
+  const snaps = [
+    ...Array.from({ length: 50 }, (_, i) => ({
+      timestamp: midnightSgt - (50 - i) * 60000,
+      lat: 1.296 + i * 0.0001,
+      lng: 103.776 + i * 0.0001
+    })),
+    ...Array.from({ length: 30 }, (_, i) => ({
+      timestamp: midnightSgt + (i + 1) * 60000,
+      lat: 1.296 + i * 0.0001,
+      lng: 103.776 + i * 0.0001
+    }))
+  ];
+
+  ui.STATE.vehicleSnapshotsCache = new Map([['PC7777X', snaps]]);
+  const duty = ui.getVehicleDutySummary('PC7777X', targetDate);
+  assert.equal(duty.activeMinutes, 30, 'Only includes 30 snapshots recorded after midnight');
+  assert.equal(duty.activeHoursLabel, '0h 30m');
+  assert.ok(duty.distanceKm > 0, 'Calculates non-zero distance for today');
 });
 
 

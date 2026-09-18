@@ -1083,10 +1083,10 @@ function renderTransitInsights() {
         <div class="segment-item">
           <span class="segment-route-badge" style="background-color:${routeColor(c.route)}">${escapeHtml(c.route)}</span>
           <div class="segment-corridor">
-            <div class="segment-corridor-name">
-              <span>${escapeHtml(c.from)}</span>
+            <div class="segment-corridor-name" title="${escapeHtml(c.from)} → ${escapeHtml(c.to)}">
+              <span class="corridor-from">${escapeHtml(c.from)}</span>
               <span class="segment-arrow">→</span>
-              <span>${escapeHtml(c.to)}</span>
+              <span class="corridor-to">${escapeHtml(c.to)}</span>
             </div>
             <div class="segment-meta">Baseline: ${c.baselineMin} min · Observed: ${c.observedMin} min</div>
           </div>
@@ -1131,7 +1131,7 @@ function renderTransitInsights() {
       let liveBadge = '';
       if (s.isActive) {
         const liveCrowdText = s.liveOccupancy !== null ? ` · ${s.liveOccupancy}% Live Crowd` : '';
-        liveBadge = `<span class="badge badge-warning" style="animation:pulse-bunched 2s infinite">🔴 Active Window Now${escapeHtml(liveCrowdText)}</span>`;
+        liveBadge = `<span class="surge-live-badge"><span class="pulse-dot-red" aria-hidden="true"></span>Active Window Now${escapeHtml(liveCrowdText)}</span>`;
       }
 
       const empiricalBadge = s.isEmpirical
@@ -1142,13 +1142,14 @@ function renderTransitInsights() {
         <div class="surge-window-card ${s.isActive ? 'is-active-window' : ''}">
           <div class="surge-header">
             <span class="surge-time">🕒 ${escapeHtml(s.timeRange)}</span>
-            ${liveBadge || `<span class="surge-magnitude">${escapeHtml(s.peakIncrease)}</span>`}
+            <span class="surge-magnitude ${s.isActive ? 'is-active-magnitude' : ''}">${escapeHtml(s.peakIncrease)}</span>
           </div>
           <div class="surge-metric-strip">
+            ${liveBadge}
             ${empiricalBadge}
           </div>
           <div class="surge-desc">${escapeHtml(s.desc)}</div>
-          <div class="surge-tip">💡 <strong>Commuter Tip:</strong> ${escapeHtml(s.tip)}</div>
+          <div class="surge-tip"><span class="surge-tip-icon" aria-hidden="true">💡</span><div class="surge-tip-text"><strong>Commuter Tip:</strong> ${escapeHtml(s.tip)}</div></div>
         </div>
       `;
     }).join('');
@@ -1299,7 +1300,10 @@ function renderFleetGrid() {
       : '';
     const duty = getVehicleDutySummary(bus.vehplate);
     const dutyBadge = `<span class="badge ${duty.badgeClass}">${duty.profile}</span>`;
-    const dutyTelemetry = `<div class="bus-duty-telemetry" style="font-size:0.75rem;color:#94a3b8;margin-top:4px;">📅 Today: ${duty.activeHoursLabel} active · ~${duty.distanceKm} km</div>`;
+    const labelPrefix = STATE.timeMode === 'date' && STATE.selectedDate && STATE.selectedDate !== formatLocalDate()
+      ? STATE.selectedDate
+      : 'Today';
+    const dutyTelemetry = `<div class="bus-duty-telemetry" style="font-size:0.75rem;color:#94a3b8;margin-top:4px;">📅 ${labelPrefix}: ${duty.activeHoursLabel} active · ~${duty.distanceKm} km</div>`;
 
     return `<article class="bus-card ${!active || stale ? 'bus-card-inactive' : ''}" data-plate="${escapeHtml(bus.vehplate)}" tabindex="0" role="button" aria-label="Open vehicle dashboard for ${escapeHtml(bus.vehplate)}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${active && !stale ? 'badge-info' : 'badge-secondary'}">${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span>${bunchedBadge}${dutyBadge}</div>${busReadingsMarkup(bus)}${dutyTelemetry}${reasonHtml}<span class="bus-card-click-hint">Click to view bus dashboard →</span></article>`;
   }).join('');
@@ -2097,11 +2101,15 @@ function updateVehicleDashboardWithInsights(vehplate, routeCode, snapshots) {
   if (!snapshots || !snapshots.length) return;
   const bus = STATE.allFleet.find(b => b.vehplate === vehplate) || STATE.liveBuses.find(b => b.vehplate === vehplate);
 
-  const duty = computeVehicleDutyCycle(snapshots, vehplate);
+  const { startMs, endMs } = getSingaporeDayBounds();
+  const todaySnaps = snapshots.filter(s => (s.timestamp || 0) >= startMs && (s.timestamp || 0) < endMs);
+  const duty = todaySnaps.length
+    ? computeVehicleDutyCycle(todaySnaps, vehplate)
+    : getVehicleDutySummary(vehplate);
   setText('vehicleMetricShift', duty.profile);
-  setText('vehicleMetricDistance', `${duty.distanceKm} km`);
+  setText('vehicleMetricDistance', `~${duty.distanceKm} km`);
 
-  const cycles = analyzeVehicleCycles(snapshots, routeCode);
+  const cycles = analyzeVehicleCycles(todaySnaps.length >= 10 ? todaySnaps : snapshots, routeCode);
   setText('vehicleStatLoops', `Loops: ${cycles.loopCount || '--'}`);
   setText('vehicleStatLayover', `Layover: ${cycles.avgLayoverMin ? `${cycles.avgLayoverMin}m` : '--'}`);
   if (cycles.avgLoopMin && bus) {
@@ -2513,6 +2521,23 @@ function computeAllRouteHeadways(liveBuses) {
   STATE.vehicleHeadways = vehicleHeadways;
 }
 
+function getSingaporeDayBounds(targetDateStr = null) {
+  let dateStr = targetDateStr;
+  if (!dateStr) {
+    if (STATE.timeMode === 'date' && STATE.selectedDate) {
+      dateStr = STATE.selectedDate;
+    } else if (STATE.history24h?.queryRange?.end && Math.abs(STATE.history24h.queryRange.end - Date.now()) > 2 * 86400000) {
+      // Historical test fixture or mocked clock environment
+      dateStr = formatLocalDate(new Date(STATE.history24h.queryRange.end));
+    } else {
+      dateStr = formatLocalDate();
+    }
+  }
+  const startMs = new Date(`${dateStr}T00:00:00+08:00`).getTime();
+  const endMs = startMs + 24 * 60 * 60 * 1000;
+  return { dateStr, startMs, endMs };
+}
+
 function computeVehicleDutyCycle(snapshots, plate) {
   if (!snapshots || !snapshots.length) {
     return {
@@ -2534,9 +2559,13 @@ function computeVehicleDutyCycle(snapshots, plate) {
     const p1 = snapshots[i];
     const p2 = snapshots[i + 1];
     if (p1.lat != null && p1.lng != null && p2.lat != null && p2.lng != null) {
-      const d = getDistanceToStop(p1.lat, p1.lng, p2.lat, p2.lng);
-      if (d >= 10 && d < 2000) {
-        totalDistM += d;
+      const timeDiffMs = Math.abs((p2.timestamp || 0) - (p1.timestamp || 0));
+      // Guard against idle jumps across shifts or overnight gap
+      if (!p1.timestamp || !p2.timestamp || timeDiffMs <= 15 * 60 * 1000) {
+        const d = getDistanceToStop(p1.lat, p1.lng, p2.lat, p2.lng);
+        if (d >= 10 && d < 2000) {
+          totalDistM += d;
+        }
       }
     }
   }
@@ -2575,12 +2604,34 @@ function computeVehicleDutyCycle(snapshots, plate) {
   };
 }
 
-function getVehicleDutySummary(plate) {
+function getVehicleDutySummary(plate, targetDateStr = null) {
+  const { startMs, endMs } = getSingaporeDayBounds(targetDateStr);
+
   const snaps = STATE.vehicleSnapshotsCache?.get(plate);
   if (snaps && snaps.length) {
-    return computeVehicleDutyCycle(snaps, plate);
+    const todaySnaps = snaps.filter(s => {
+      const ts = s.timestamp || 0;
+      return ts >= startMs && ts < endMs;
+    });
+    if (todaySnaps.length) {
+      return computeVehicleDutyCycle(todaySnaps, plate);
+    }
+    return {
+      activeMinutes: 0,
+      activeHoursLabel: '0h 0m',
+      distanceKm: 0,
+      profile: 'Standby / Off-duty',
+      badgeClass: 'badge-duty-standby'
+    };
   }
-  const rows = (STATE.history24h?.vehicleData || []).filter(r => r.vehplate === plate);
+
+  const allVehicleRows = STATE.history24h?.vehicleData || [];
+  const rows = allVehicleRows.filter(r => {
+    if (r.vehplate !== plate) return false;
+    const ts = typeof r.bucket_ts === 'number' ? r.bucket_ts : 0;
+    return ts >= startMs && ts < endMs;
+  });
+
   if (!rows.length) {
     return {
       activeMinutes: 0,
@@ -3028,6 +3079,7 @@ globalRoot.computeRouteHeadways = computeRouteHeadways;
 globalRoot.computeAllRouteHeadways = computeAllRouteHeadways;
 globalRoot.computeVehicleDutyCycle = computeVehicleDutyCycle;
 globalRoot.getVehicleDutySummary = getVehicleDutySummary;
+globalRoot.getSingaporeDayBounds = getSingaporeDayBounds;
 globalRoot.analyzeVehicleCycles = analyzeVehicleCycles;
 globalRoot.getStopDwellAndExchangeForVehicle = getStopDwellAndExchangeForVehicle;
 globalRoot.computeStopBottlenecksAndCorridors = computeStopBottlenecksAndCorridors;
