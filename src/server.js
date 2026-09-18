@@ -25,10 +25,10 @@ class RequestError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
-function sendJson(res, code, data) {
+function sendJson(res, code, data, cacheControl = 'no-store') {
   const body = JSON.stringify(data);
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+    'Content-Length': Buffer.byteLength(body), 'Cache-Control': cacheControl, 'X-Content-Type-Options': 'nosniff' });
   res.end(body);
 }
 
@@ -112,6 +112,29 @@ function getApplication() {
 }
 
 export function createRequestHandler({ db, collector, env = process.env } = {}) {
+  const apiCache = new Map();
+  function getCached(key) {
+    const item = apiCache.get(key);
+    if (!item) return null;
+    if (Date.now() > item.expiresAt) {
+      apiCache.delete(key);
+      return null;
+    }
+    return item.payload;
+  }
+  function setCached(key, payload, ttlMs) {
+    apiCache.set(key, { payload, expiresAt: Date.now() + ttlMs });
+    if (apiCache.size > 200) {
+      const now = Date.now();
+      for (const [k, v] of apiCache) {
+        if (v.expiresAt <= now || apiCache.size > 150) apiCache.delete(k);
+      }
+    }
+  }
+  function clearCache() {
+    apiCache.clear();
+  }
+
   function resolveDependencies() {
     if (!db && !collector && env === process.env) {
       ({ db, collector } = getApplication());
@@ -142,26 +165,45 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
       if (expectedMethod) resolveDependencies();
       const now = Date.now();
       if (pathname === '/api/status') {
+        const cached = getCached('status');
+        if (cached) {
+          return sendJson(res, 200, cached, 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
+        }
         const [status, fleet, availableDates] = await Promise.all([
           collector.getStatus(), db.getAllFleetStatus(), db.getAvailableDates()
         ]);
-        return sendJson(res, 200, { ...status, routes: NUS_ROUTES,
+        const responseData = { ...status, routes: NUS_ROUTES,
           knownFleetCount: fleet.length, availableDates,
           timeZone: 'Asia/Singapore', storage: db.storage.type,
-          adminRequired: Boolean(env.ADMIN_TOKEN) || !localRequest(req, env) });
+          adminRequired: Boolean(env.ADMIN_TOKEN) || !localRequest(req, env) };
+        setCached('status', responseData, 30000);
+        return sendJson(res, 200, responseData, 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
       }
       if (pathname === '/api/live') {
+        const cached = getCached('live');
+        if (cached) {
+          return sendJson(res, 200, cached, 'public, max-age=10, s-maxage=15, stale-while-revalidate=30');
+        }
         const [buses, allFleet, status, latestPoll] = await Promise.all([
           db.getLatestLiveBuses(), db.getAllFleetStatus(), collector.getStatus(), db.getLatestPoll()
         ]);
-        return sendJson(res, 200, { timestamp: now, lastPolledAt: status.lastPolledAt, isStale: status.isStale,
+        const responseData = { timestamp: now, lastPolledAt: status.lastPolledAt, isStale: status.isStale,
           latestPoll,
           buses, allFleet, activeCount: buses.length,
           inactiveCount: allFleet.filter(bus => bus.status === 'inactive').length,
           staleCount: allFleet.filter(bus => bus.status === 'stale').length,
-          knownFleetCount: allFleet.length, routes: NUS_ROUTES });
+          knownFleetCount: allFleet.length, routes: NUS_ROUTES };
+        setCached('live', responseData, 15000);
+        return sendJson(res, 200, responseData, 'public, max-age=10, s-maxage=15, stale-while-revalidate=30');
       }
       if (pathname === '/api/history/24h') {
+        const cacheKey = 'history:' + url.search;
+        const cached = getCached(cacheKey);
+        if (cached) {
+          const cacheHeader = cached._cacheHeader || 'public, max-age=30, s-maxage=60, stale-while-revalidate=120';
+          const { _cacheHeader, ...cleanData } = cached;
+          return sendJson(res, 200, cleanData, cacheHeader);
+        }
         const mode = url.searchParams.get('mode') || 'rolling';
         if (!['rolling', 'date'].includes(mode)) throw new RequestError(400, 'mode must be rolling or date.');
         const selectedDate = mode === 'date' ? url.searchParams.get('date') : null;
@@ -170,31 +212,53 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
         const [history, dataSources, availableDates] = await Promise.all([
           db.get24HourHistory(start, effectiveEnd), db.getDataSources(start, effectiveEnd), db.getAvailableDates()
         ]);
-        return sendJson(res, 200, { mode, selectedDate, currentTime: now, timeZone: 'Asia/Singapore',
+        const responseData = { mode, selectedDate, currentTime: now, timeZone: 'Asia/Singapore',
           queryRange: { start, end, effectiveEnd, startIso: new Date(start).toISOString(), endIso: new Date(end).toISOString() },
-          ...history, dataSources, availableDates, routes: NUS_ROUTES });
+          ...history, dataSources, availableDates, routes: NUS_ROUTES };
+        const isPastDate = mode === 'date' && effectiveEnd < now - 3600000;
+        const ttlMs = isPastDate ? 3600000 : 60000;
+        const cacheHeader = isPastDate
+          ? 'public, max-age=86400, s-maxage=86400'
+          : 'public, max-age=30, s-maxage=60, stale-while-revalidate=120';
+        setCached(cacheKey, { ...responseData, _cacheHeader: cacheHeader }, ttlMs);
+        return sendJson(res, 200, responseData, cacheHeader);
       }
       if (pathname === '/api/history/vehicle-snapshots') {
         const plate = url.searchParams.get('plate');
         if (!plate) throw new RequestError(400, 'plate parameter is required.');
         const limit = url.searchParams.get('limit') || 200;
+        const cacheKey = `vehicle:${plate}:${limit}`;
+        const cached = getCached(cacheKey);
+        if (cached) {
+          return sendJson(res, 200, cached, 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
+        }
         const snapshots = await db.getVehicleSnapshots(plate, limit);
-        return sendJson(res, 200, { vehplate: plate, count: snapshots.length, snapshots });
+        const responseData = { vehplate: plate, count: snapshots.length, snapshots };
+        setCached(cacheKey, responseData, 30000);
+        return sendJson(res, 200, responseData, 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
       }
       if (pathname === '/api/analytics/optimize') {
+        const cached = getCached('analytics');
+        if (cached) {
+          return sendJson(res, 200, cached, 'public, max-age=300, s-maxage=300, stale-while-revalidate=600');
+        }
         const [analytics, dataSources] = await Promise.all([
           db.getHourlyAnalytics(now - 7 * DAY_MS, now), db.getDataSources(now - 7 * DAY_MS, now)
         ]);
-        return sendJson(res, 200, { ...analytics, timeZone: 'Asia/Singapore', dataSources,
-          note: 'Observed averages from the past seven days. Sampling coverage varies; these are not travel forecasts.' });
+        const responseData = { ...analytics, timeZone: 'Asia/Singapore', dataSources,
+          note: 'Observed averages from the past seven days. Sampling coverage varies; these are not travel forecasts.' };
+        setCached('analytics', responseData, 300000);
+        return sendJson(res, 200, responseData, 'public, max-age=300, s-maxage=300, stale-while-revalidate=600');
       }
       if (pathname === '/api/poll-now' || pathname === '/api/cron') {
         const result = await collector.pollNow();
+        if (result.success) clearCache();
         return sendJson(res, result.success ? 200 : result.statusCode || 502, result);
       }
       if (pathname === '/api/settings') {
         await parseBody(req);
         if (collector.isPolling) throw new RequestError(409, 'Wait for the current poll to finish before changing credentials.');
+        clearCache();
         const status = await collector.getStatus();
         return sendJson(res, 200, { success: true, authMode: status.authMode, dataProvider: status.dataProvider, hasToken: status.hasToken, message: 'Settings are managed automatically.' });
       }
@@ -202,6 +266,7 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
         if (collector.isPolling) throw new RequestError(409, 'Wait for the current poll to finish before clearing history.');
         const clearedCount = await db.clearAllSnapshots();
         await db.deleteSetting('last_error');
+        clearCache();
         return sendJson(res, 200, { success: true, clearedCount, remainingSnapshots: 0 });
       }
       if (pathname === '/api/export') {

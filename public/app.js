@@ -251,6 +251,8 @@ async function fetchHistory24h() {
     STATE.history24h = data;
     delete STATE.errors.history;
     if (Array.isArray(data.availableDates)) STATE.availableDates = data.availableDates;
+    STATE.lastFetched ||= {};
+    STATE.lastFetched.history = Date.now();
   } catch (error) {
     if (requestId !== STATE.historyRequest) return;
     STATE.errors.history = error.message;
@@ -261,30 +263,56 @@ async function fetchHistory24h() {
   renderTimelineChart();
 }
 
-async function refreshAllData() {
+async function refreshAllData({ forceAll = false } = {}) {
   if (STATE.refreshPromise) return STATE.refreshPromise;
   STATE.refreshPromise = (async () => {
-    const resources = [
-      ['status', '/api/status', data => {
+    const now = Date.now();
+    STATE.lastFetched ||= { live: 0, status: 0, history: 0, analytics: 0 };
+
+    const shouldFetchStatus = forceAll || (now - STATE.lastFetched.status >= 60000);
+    const shouldFetchLive = forceAll || (now - STATE.lastFetched.live >= 25000);
+    const shouldFetchAnalytics = forceAll || (now - STATE.lastFetched.analytics >= 15 * 60 * 1000);
+    const shouldFetchHistory = forceAll || (now - STATE.lastFetched.history >= 3 * 60 * 1000);
+
+    const resources = [];
+    if (shouldFetchStatus) {
+      resources.push(['status', '/api/status', data => {
         STATE.status = data;
         STATE.routesMeta = data.routes || {};
         STATE.availableDates = Array.isArray(data.availableDates) ? data.availableDates : [];
         STATE.nextPollAt = numeric(data.nextPollInSec) === null ? null : Date.now() + data.nextPollInSec * 1000;
-      }],
-      ['live', '/api/live', data => {
+        STATE.lastFetched.status = Date.now();
+      }]);
+    }
+    if (shouldFetchLive) {
+      resources.push(['live', '/api/live', data => {
         STATE.live = data;
         STATE.liveBuses = Array.isArray(data.buses) ? data.buses : [];
         STATE.allFleet = Array.isArray(data.allFleet) ? data.allFleet : STATE.liveBuses;
-      }],
-      ['analytics', '/api/analytics/optimize', data => { STATE.analytics = data; }]
-    ];
-    await Promise.allSettled([
+        STATE.lastFetched.live = Date.now();
+      }]);
+    }
+    if (shouldFetchAnalytics) {
+      resources.push(['analytics', '/api/analytics/optimize', data => {
+        STATE.analytics = data;
+        STATE.lastFetched.analytics = Date.now();
+      }]);
+    }
+
+    const tasks = [
       ...resources.map(async ([name, url, apply]) => {
         try { apply(await requestJson(url)); delete STATE.errors[name]; }
         catch (error) { STATE.errors[name] = error.message; }
-      }),
-      fetchHistory24h()
-    ]);
+      })
+    ];
+
+    if (shouldFetchHistory) {
+      tasks.push(fetchHistory24h().then(() => {
+        STATE.lastFetched.history = Date.now();
+      }));
+    }
+
+    await Promise.allSettled(tasks);
     updateLiveStopsCrowdReadings(STATE.liveBuses);
     renderAll();
   })().finally(() => { STATE.refreshPromise = null; });
@@ -1029,7 +1057,21 @@ function renderOptimizerView() {
     }).join('') : emptyMarkup('Collect live occupancy history to compare observed hours.');
   }
   const routes = observedRouteSummaries();
-  $('routeSummaryCards').innerHTML = error ? emptyMarkup('Route history is unavailable.') : routes.length ? routes.map(row => `<div class="comparison-box"><div class="comparison-header" style="color:${routeColor(row.route_code)}">Service ${escapeHtml(row.route_code)}</div><div>${percentLabel(row.avg_occupancy_pct)} average occupancy</div><div class="window-meta">${numberLabel(row.avg_ridership)} average passengers per bus</div><div class="window-meta">${numberLabel(row.occupancy_sample_count)} occupancy readings · ${numberLabel(row.ridership_sample_count)} passenger readings</div></div>`).join('') : emptyMarkup('No route history collected yet.');
+  $('routeSummaryCards').innerHTML = error ? emptyMarkup('Route history is unavailable.') : routes.length ? routes.map(row => `
+    <div class="comparison-box">
+      <div class="comparison-header" style="color:${routeColor(row.route_code)}">
+        <span>Service ${escapeHtml(row.route_code)}</span>
+      </div>
+      <div class="comparison-metric-main">
+        <strong class="comparison-pct">${percentLabel(row.avg_occupancy_pct)}</strong>
+        <span class="comparison-pct-label">avg occupancy</span>
+      </div>
+      <div class="comparison-meta-group">
+        <div class="window-meta">${numberLabel(row.avg_ridership)} avg pax / bus</div>
+        <div class="window-meta">${numberLabel(row.occupancy_sample_count)} occupancy readings · ${numberLabel(row.ridership_sample_count)} pax readings</div>
+      </div>
+    </div>
+  `).join('') : emptyMarkup('No route history collected yet.');
   renderHourlyBarChart();
   renderTransitInsights();
 }
@@ -3228,7 +3270,13 @@ function renderVehicleStopProgression(bus) {
 
 function initLeafletMap() {
   if (typeof L === 'undefined') { setText('mapDataMessage', 'Map library unavailable. Fleet readings remain available in the Fleet tab.'); return; }
-  STATE.leafletMap = L.map('leafletMap', { center: [1.2966, 103.7764], zoom: 15, minZoom: 10, maxZoom: 19 });
+  STATE.leafletMap = L.map('leafletMap', {
+    center: [1.2966, 103.7764],
+    zoom: 15,
+    minZoom: 10,
+    maxZoom: 19,
+    attributionControl: false
+  });
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
     attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, TomTom',
     maxZoom: 19,
@@ -3562,6 +3610,11 @@ function openVehicleDashboard(vehplate) {
   renderVehicleHourlyBarChart(bus);
   renderVehicleStopProgression(bus);
   fetchVehicleSnapshots(bus.vehplate, bus.route_code);
+  setTimeout(() => {
+    if (STATE.vehicleDetailMap) {
+      STATE.vehicleDetailMap.invalidateSize();
+    }
+  }, 50);
 }
 
 function closeVehicleDashboard() {
@@ -3708,13 +3761,13 @@ function renderVehicleDetailMap(bus) {
 function renderVehicleDetailChart(bus) {
   const containerW = $('vehicleTimelineChart')?.parentElement?.clientWidth || 700;
   const isMobile = containerW < 520;
-  const height = isMobile ? 180 : 240;
+  const height = isMobile ? 120 : 155;
   const chart = chartContext('vehicleTimelineChart', height);
   if (!chart) return;
   const { canvas, ctx, width } = chart;
   const padding = isMobile
-    ? { top: 22, right: 14, bottom: 32, left: 38 }
-    : { top: 24, right: 18, bottom: 42, left: 50 };
+    ? { top: 18, right: 10, bottom: 24, left: 34 }
+    : { top: 20, right: 14, bottom: 28, left: 42 };
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
   if (chartW <= 0 || chartH <= 0) return;
@@ -3870,24 +3923,31 @@ function renderVehicleDetailChart(bus) {
   ctx.stroke();
 
   const validVehicleData = primaryData.filter(v => v !== null);
-  const baseR = validVehicleData.length < 20 ? 3.5 : 2.5;
-  ctx.fillStyle = color;
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  primaryData.forEach((val, i) => {
-    if (val === null || STATE.vehicleHoveredIndex === i) return;
-    const x = xAt(i), y = yAt(val);
-    ctx.moveTo(x + baseR, y);
-    ctx.arc(x, y, baseR, 0, Math.PI * 2);
-  });
-  ctx.fill();
-  ctx.stroke();
+  // Only plot individual marker dots along the line when readings are sparse (<= 25),
+  // avoiding visual noise/clumping when dense observations (hundreds of points) are present.
+  if (validVehicleData.length <= 25) {
+    const baseR = validVehicleData.length < 10 ? 3.5 : 2.5;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    primaryData.forEach((val, i) => {
+      if (val === null || STATE.vehicleHoveredIndex === i) return;
+      const x = xAt(i), y = yAt(val);
+      ctx.moveTo(x + baseR, y);
+      ctx.arc(x, y, baseR, 0, Math.PI * 2);
+    });
+    ctx.fill();
+    ctx.stroke();
+  }
 
   if (STATE.vehicleHoveredIndex !== null && primaryData[STATE.vehicleHoveredIndex] !== null && primaryData[STATE.vehicleHoveredIndex] !== undefined) {
     const i = STATE.vehicleHoveredIndex;
     ctx.beginPath();
     ctx.arc(xAt(i), yAt(primaryData[i]), 5.5, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
     ctx.fill();
     ctx.stroke();
   }
@@ -3924,10 +3984,15 @@ function renderVehicleDetailChart(bus) {
 }
 
 function renderVehicleHourlyBarChart(bus) {
-  const chart = chartContext('vehicleHourlyBarChart', 120);
+  const containerW = $('vehicleHourlyBarChart')?.parentElement?.clientWidth || 700;
+  const isMobile = containerW < 520;
+  const height = isMobile ? 55 : 65;
+  const chart = chartContext('vehicleHourlyBarChart', height);
   if (!chart) return;
-  const { canvas, ctx, width, height } = chart;
-  const padding = { top: 14, right: 18, bottom: 26, left: 45 };
+  const { canvas, ctx, width } = chart;
+  const padding = isMobile
+    ? { top: 6, right: 10, bottom: 16, left: 30 }
+    : { top: 8, right: 14, bottom: 18, left: 36 };
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
   if (chartW <= 0 || chartH <= 0) return;
@@ -3969,18 +4034,19 @@ function renderVehicleHourlyBarChart(bus) {
   const observed = hourlyValues.filter(v => v !== null);
   const maxY = Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25);
 
-  ctx.font = '10px sans-serif';
+  ctx.font = '9px sans-serif';
   ctx.textAlign = 'right';
-  for (let i = 0; i <= 4; i++) {
-    const val = (maxY * i) / 4;
-    const y = padding.top + chartH * (1 - i / 4);
+  const tickSteps = 2;
+  for (let i = 0; i <= tickSteps; i++) {
+    const val = (maxY * i) / tickSteps;
+    const y = padding.top + chartH * (1 - i / tickSteps);
     ctx.strokeStyle = '#273553';
     ctx.beginPath();
     ctx.moveTo(padding.left, y);
     ctx.lineTo(width - padding.right, y);
     ctx.stroke();
     ctx.fillStyle = '#64748b';
-    ctx.fillText(`${numberLabel(val)}%`, padding.left - 6, y + 3);
+    ctx.fillText(`${numberLabel(val)}%`, padding.left - 4, y + 3);
   }
 
   const slotW = chartW / 24;
@@ -4000,7 +4066,7 @@ function renderVehicleHourlyBarChart(bus) {
     ctx.fillStyle = isHovered ? '#f1f5f9' : '#64748b';
     const step = chartW < 500 ? 3 : chartW < 750 ? 2 : 1;
     if (hour % step === 0) {
-      ctx.fillText(String(hour).padStart(2, '0'), barX + barW / 2, height - 8);
+      ctx.fillText(String(hour).padStart(2, '0'), barX + barW / 2, height - 3);
     }
 
     const val = hourlyValues[hour];
@@ -4298,8 +4364,14 @@ function setupTabs() {
     tabs.forEach(tab => { tab.classList.toggle('active', tab === button); tab.setAttribute('aria-selected', String(tab === button)); tab.tabIndex = tab === button ? 0 : -1; });
     document.querySelectorAll('.tab-content').forEach(panel => panel.classList.toggle('active', panel.id === STATE.currentTab));
     if (STATE.currentTab === 'tab-map') { initMapIfNeeded(); STATE.leafletMap?.invalidateSize(); renderMapBuses(); }
-    if (STATE.currentTab === 'tab-24h') renderTimelineChart();
-    if (STATE.currentTab === 'tab-optimizer') renderOptimizerView();
+    if (STATE.currentTab === 'tab-24h') {
+      renderTimelineChart();
+      if (Date.now() - (STATE.lastFetched?.history || 0) > 3 * 60 * 1000) refreshAllData();
+    }
+    if (STATE.currentTab === 'tab-optimizer') {
+      renderOptimizerView();
+      if (Date.now() - (STATE.lastFetched?.analytics || 0) > 5 * 60 * 1000) refreshAllData();
+    }
   }));
   tabs.forEach((button, index) => {
     button.tabIndex = button.classList.contains('active') ? 0 : -1;
@@ -4377,7 +4449,7 @@ function setupActionButtons() {
       const data = await requestJson(endpoint, options);
       showAction(`Live collection complete: ${numberLabel(data.recordsCount ?? data.polledCount)} vehicle readings.`);
     } catch (error) { showAction(`Collection failed: ${error.message}`, true); }
-    finally { STATE.polling = false; if (STATE.refreshPromise) await STATE.refreshPromise; await refreshAllData(); }
+    finally { STATE.polling = false; if (STATE.refreshPromise) await STATE.refreshPromise; await refreshAllData({ forceAll: true }); }
   };
   $('btnPollNow').addEventListener('click', pollNow); $('btnSettingsPollNow').addEventListener('click', pollNow);
   $('btnCloseBanner')?.addEventListener('click', () => { $('connectionBanner').hidden = true; });

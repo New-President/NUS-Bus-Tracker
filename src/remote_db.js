@@ -34,6 +34,21 @@ export class RemoteBusDatabase {
     this.storage = { type: 'turso', persistent: true };
     this.initialization = null;
     this.closed = false;
+    this._cache = {
+      totalSnapshots: undefined,
+      totalSnapshotsTime: 0,
+      availableDates: null,
+      availableDatesTime: 0,
+      fleet: null,
+      fleetTime: 0,
+      fleetNowMs: 0
+    };
+  }
+
+  _invalidateCache() {
+    this._cache.totalSnapshots = undefined;
+    this._cache.availableDates = null;
+    this._cache.fleet = null;
   }
 
   async ready() {
@@ -148,6 +163,7 @@ export class RemoteBusDatabase {
         args: []
       }
     ], 'write');
+    this._invalidateCache();
     return { batchId: Number(results[0].lastInsertRowid), recordsCount: records.length, timestamp };
   }
 
@@ -166,6 +182,17 @@ export class RemoteBusDatabase {
 
   async getAllFleetStatus(nowMs = Date.now()) {
     await this.ready();
+    const cache = this._cache;
+    const now = Date.now();
+    if (cache.fleet && Math.abs(nowMs - cache.fleetNowMs) < 10000 && now - cache.fleetTime < 10000) {
+      const latestBatch = cache.fleet.latestBatch;
+      const fresh = latestBatch && latestBatch.timestamp >= nowMs - ACTIVE_WINDOW_MS;
+      return cache.fleet.records.map(record => ({
+        ...record,
+        status: !fresh ? 'stale' : record.poll_batch_id === latestBatch?.id ? 'active' : 'inactive',
+        last_seen_at: record.timestamp
+      }));
+    }
     // Read the latest batch and vehicle history from the same database snapshot;
     // a poll finishing in another function cannot mix two fleet generations.
     const results = await this.client.batch([
@@ -178,7 +205,11 @@ export class RemoteBusDatabase {
     ], 'read');
     const latestBatch = results[0].rows[0];
     const fresh = latestBatch && latestBatch.timestamp >= nowMs - ACTIVE_WINDOW_MS;
-    return results[1].rows.map(({ vehicle_rank, ...record }) => ({
+    const records = results[1].rows.map(({ vehicle_rank, ...record }) => record);
+    cache.fleet = { latestBatch, records };
+    cache.fleetTime = now;
+    cache.fleetNowMs = nowMs;
+    return records.map(record => ({
       ...record,
       status: !fresh ? 'stale' : record.poll_batch_id === latestBatch.id ? 'active' : 'inactive',
       last_seen_at: record.timestamp
@@ -186,7 +217,14 @@ export class RemoteBusDatabase {
   }
 
   async getTotalSnapshotsCount() {
-    return (await this.rows('SELECT COUNT(*) AS count FROM snapshots WHERE timestamp <= ?', [Date.now()]))[0].count;
+    const now = Date.now();
+    if (this._cache.totalSnapshots !== undefined && now - this._cache.totalSnapshotsTime < 30000) {
+      return this._cache.totalSnapshots;
+    }
+    const count = (await this.rows('SELECT COUNT(*) AS count FROM snapshots WHERE timestamp <= ?', [now]))[0].count;
+    this._cache.totalSnapshots = count;
+    this._cache.totalSnapshotsTime = now;
+    return count;
   }
 
   async getDataSources(startTimeMs, endTimeMs) {
@@ -239,10 +277,21 @@ export class RemoteBusDatabase {
   }
 
   async getAvailableDates() {
-    return (await this.rows(`
+    const now = Date.now();
+    if (this._cache.availableDates && now - this._cache.availableDatesTime < 60000) {
+      return this._cache.availableDates;
+    }
+    const dates = (await this.rows(`
+      SELECT DISTINCT date(timestamp / 1000, 'unixepoch', '+8 hours') AS date
+      FROM poll_batches WHERE timestamp <= ? AND records_count > 0 ORDER BY date DESC
+    `, [now])).map(row => row.date);
+    const result = dates.length > 0 ? dates : (await this.rows(`
       SELECT DISTINCT date(timestamp / 1000, 'unixepoch', '+8 hours') AS date
       FROM snapshots WHERE timestamp <= ? ORDER BY date DESC
-    `, [Date.now()])).map(row => row.date);
+    `, [now])).map(row => row.date);
+    this._cache.availableDates = result;
+    this._cache.availableDatesTime = now;
+    return result;
   }
 
   async getCommuteOptimizationAnalytics(startTimeMs, endTimeMs) {
@@ -297,6 +346,7 @@ export class RemoteBusDatabase {
       'DELETE FROM snapshots', 'DELETE FROM poll_batches',
       { sql: SET_SETTING_SQL, args: ['last_polled_at', '0'] }
     ], 'write');
+    this._invalidateCache();
     return results[0].rowsAffected;
   }
 
