@@ -47,6 +47,7 @@
 }
 
 [hidden] { display: none !important; }
+button, a, input, select, .tab-btn, .pill-btn, .btn, .banner-close-btn, .toggle-btn { touch-action: manipulation; }
 button:disabled, input:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #38bdf8; outline-offset: 3px; }
 .badge-secondary { background: #263246; color: #cbd5e1; }
@@ -157,6 +158,7 @@ body {
   background: linear-gradient(180deg, #162137 0%, #10182b 100%);
   border-bottom: 1px solid var(--border-color);
   padding: 16px 24px;
+  padding: max(16px, env(safe-area-inset-top, 16px)) 24px 16px;
   position: sticky;
   top: 0;
   z-index: 100;
@@ -301,6 +303,7 @@ body {
   width: 100%;
   margin: 0 auto;
   padding: 24px 20px;
+  padding: 24px 20px max(24px, env(safe-area-inset-bottom, 24px));
   flex: 1;
 }
 

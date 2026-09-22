@@ -101,14 +101,22 @@ export class BusCollector {
     } finally { this.currentSource = source; }
   }
 
-  async getStatus() {
+  async getStatus({ latestPoll } = {}) {
     const now = this.now();
-    const [lastPolled, lastAttempt, latest, lastError, totalSnapshots] = await Promise.all([
-      this.db.getSetting('last_polled_at'), this.db.getSetting('last_attempt_at'),
-      this.db.getLatestPoll(now), this.db.getSetting('last_error'), this.db.getTotalSnapshotsCount()
+    const settingsPromise = typeof this.db.getSettings === 'function'
+      ? this.db.getSettings(['last_polled_at', 'last_attempt_at', 'last_error'])
+      : Promise.all([
+          this.db.getSetting('last_polled_at'),
+          this.db.getSetting('last_attempt_at'),
+          this.db.getSetting('last_error')
+        ]).then(([last_polled_at, last_attempt_at, last_error]) => ({ last_polled_at, last_attempt_at, last_error }));
+    const latestPromise = latestPoll !== undefined ? latestPoll : this.db.getLatestPoll(now);
+    const [settings, latest, totalSnapshots] = await Promise.all([
+      settingsPromise, latestPromise, this.db.getTotalSnapshotsCount()
     ]);
-    const lastPolledAt = Number(lastPolled || 0);
-    const lastAttemptAt = Number(lastAttempt || 0);
+    const lastPolledAt = Number(settings.last_polled_at || 0);
+    const lastAttemptAt = Number(settings.last_attempt_at || 0);
+    const lastError = settings.last_error || null;
     const configured = getProviderConfig(this.env);
     // Attribute stored observations independently of the next provider request.
     const observed = latest ? getProviderConfig({

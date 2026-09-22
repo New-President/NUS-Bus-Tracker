@@ -106,6 +106,7 @@ export class RemoteBusDatabase {
       'CREATE INDEX IF NOT EXISTS idx_snapshots_time ON snapshots(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_snapshots_route_time ON snapshots(route_code, timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_snapshots_vehicle_time ON snapshots(vehplate, timestamp DESC, id DESC)',
+      'CREATE INDEX IF NOT EXISTS idx_snapshots_poll_batch ON snapshots(poll_batch_id)',
       'CREATE INDEX IF NOT EXISTS idx_poll_batches_time ON poll_batches(timestamp DESC, id DESC)',
       ...Object.entries({ last_polled_at: '0' }).map(([key, value]) => ({
         sql: 'INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING', args: [key, value]
@@ -125,6 +126,16 @@ export class RemoteBusDatabase {
 
   async getSetting(key) {
     return (await this.rows('SELECT value FROM settings WHERE key = ?', [key]))[0]?.value ?? null;
+  }
+
+  async getSettings(keys = []) {
+    if (!Array.isArray(keys) || keys.length === 0) return {};
+    const placeholders = keys.map(() => '?').join(', ');
+    const rows = await this.rows(`SELECT key, value FROM settings WHERE key IN (${placeholders})`, keys);
+    const result = {};
+    for (const key of keys) result[key] = null;
+    for (const row of rows) result[row.key] = row.value;
+    return result;
   }
 
   async setSetting(key, value) {
@@ -338,6 +349,47 @@ export class RemoteBusDatabase {
       FROM snapshots s JOIN poll_batches p ON p.id = s.poll_batch_id
       WHERE s.timestamp <= ? AND p.timestamp <= ? ORDER BY s.timestamp DESC, s.id DESC LIMIT ?
     `, [now, now, limit]);
+  }
+
+  async pruneRecordsOlderThan(cutoffMs, { batchLimit = 5000 } = {}) {
+    if (!Number.isSafeInteger(cutoffMs) || cutoffMs < 0) {
+      throw new TypeError('Cutoff timestamp must be a non-negative integer');
+    }
+    const safeLimit = Math.max(1, Math.min(Number(batchLimit) || 5000, 50000));
+    await this.ready();
+
+    let totalSnapshotsDeleted = 0;
+    let totalBatchesDeleted = 0;
+
+    while (true) {
+      const result = await this.client.execute({
+        sql: `DELETE FROM snapshots WHERE id IN (
+          SELECT id FROM snapshots WHERE timestamp < ? LIMIT ?
+        )`,
+        args: [cutoffMs, safeLimit]
+      });
+      const affected = Number(result.rowsAffected || 0);
+      totalSnapshotsDeleted += affected;
+      if (affected < safeLimit) break;
+    }
+
+    while (true) {
+      const result = await this.client.execute({
+        sql: `DELETE FROM poll_batches WHERE id IN (
+          SELECT id FROM poll_batches WHERE timestamp < ? LIMIT ?
+        )`,
+        args: [cutoffMs, safeLimit]
+      });
+      const affected = Number(result.rowsAffected || 0);
+      totalBatchesDeleted += affected;
+      if (affected < safeLimit) break;
+    }
+
+    this._invalidateCache();
+    return {
+      deletedBatches: totalBatchesDeleted,
+      deletedSnapshots: totalSnapshotsDeleted
+    };
   }
 
   async clearAllSnapshots() {

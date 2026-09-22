@@ -184,8 +184,10 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
         if (cached) {
           return sendJson(res, 200, cached, 'public, max-age=10, s-maxage=15, stale-while-revalidate=30');
         }
-        const [buses, allFleet, status, latestPoll] = await Promise.all([
-          db.getLatestLiveBuses(), db.getAllFleetStatus(), collector.getStatus(), db.getLatestPoll()
+        const latestPollPromise = db.getLatestPoll();
+        const [buses, allFleet, latestPoll, status] = await Promise.all([
+          db.getLatestLiveBuses(), db.getAllFleetStatus(), latestPollPromise,
+          collector.getStatus({ latestPoll: latestPollPromise })
         ]);
         const responseData = { timestamp: now, lastPolledAt: status.lastPolledAt, isStale: status.isStale,
           latestPoll,

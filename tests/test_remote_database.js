@@ -15,6 +15,7 @@ const { createDatabase, getDatabase, DatabaseConfigurationError } = await import
 const { RemoteBusDatabase } = await import('../src/remote_db.js');
 const { BusCollector } = await import('../src/collector.js');
 const { createRequestHandler } = await import('../src/server.js');
+const { getCutoffTimestamp, runCleanup } = await import('../scripts/cleanup.js');
 
 const DAY_MS = 86400000;
 const SINGAPORE_OFFSET = 8 * 3600000;
@@ -500,3 +501,108 @@ test('serverless handler awaits durable collection, reads, settings, export and 
   assert.equal(await second.db.getTotalSnapshotsCount(), 0);
   assert.equal(await second.db.getSetting('last_polled_at'), '0');
 });
+
+test('pruneRecordsOlderThan validates arguments and purges old records with chunking', async t => {
+  const { db, client } = durableDatabase(t);
+  await assert.rejects(db.pruneRecordsOlderThan(-1), /Cutoff timestamp must be a non-negative integer/);
+  await assert.rejects(db.pruneRecordsOlderThan('invalid'), /Cutoff timestamp must be a non-negative integer/);
+
+  const now = Date.now();
+  const oldTime1 = now - 45 * DAY_MS;
+  const oldTime2 = now - 35 * DAY_MS;
+  const recentTime1 = now - 10 * DAY_MS;
+  const recentTime2 = now - 1 * DAY_MS;
+
+  await db.recordPoll([bus('BUS-OLD-1'), bus('BUS-OLD-2')], oldTime1);
+  await db.recordPoll([bus('BUS-OLD-3')], oldTime2);
+  await db.recordPoll([bus('BUS-RECENT-1')], recentTime1);
+  await db.recordPoll([bus('BUS-RECENT-2')], recentTime2);
+
+  assert.equal(await db.getTotalSnapshotsCount(), 5);
+  const batchesBefore = (await client.execute('SELECT COUNT(*) AS count FROM poll_batches')).rows[0].count;
+  assert.equal(batchesBefore, 4);
+
+  // Cutoff at 30 days ago, with batchLimit: 1 to exercise the chunking while loop
+  const cutoff = now - 30 * DAY_MS;
+  const result = await db.pruneRecordsOlderThan(cutoff, { batchLimit: 1 });
+  assert.equal(result.deletedBatches, 2);
+  assert.equal(result.deletedSnapshots, 3);
+
+  // Remaining snapshots
+  const remainingSnapshots = await db.rows('SELECT vehplate, timestamp FROM snapshots ORDER BY timestamp ASC');
+  assert.equal(remainingSnapshots.length, 2);
+  assert.equal(remainingSnapshots[0].vehplate, 'BUS-RECENT-1');
+  assert.equal(remainingSnapshots[1].vehplate, 'BUS-RECENT-2');
+
+  // Remaining poll batches
+  const remainingBatches = await db.rows('SELECT timestamp FROM poll_batches ORDER BY timestamp ASC');
+  assert.equal(remainingBatches.length, 2);
+  assert.equal(remainingBatches[0].timestamp, recentTime1);
+  assert.equal(remainingBatches[1].timestamp, recentTime2);
+
+  // Cache was invalidated
+  assert.equal(await db.getTotalSnapshotsCount(), 2);
+});
+
+test('cleanup script calculates cutoffs, supports dryRun, and prunes with custom days', async t => {
+  const reference = new Date('2026-03-15T12:00:00.000Z').getTime();
+  const calendarCutoff = getCutoffTimestamp(null, reference);
+  const expectedDate = new Date('2026-02-15T12:00:00.000Z').getTime();
+  assert.equal(calendarCutoff, expectedDate);
+
+  const customDaysCutoff = getCutoffTimestamp(10, reference);
+  assert.equal(customDaysCutoff, reference - 10 * DAY_MS);
+
+  const { db } = durableDatabase(t);
+  const now = Date.now();
+  await db.recordPoll([bus('OLD-BUS')], now - 40 * DAY_MS);
+  await db.recordPoll([bus('NEW-BUS')], now - 2 * DAY_MS);
+
+  // Dry run preview
+  const dryRunResult = await runCleanup({ db, days: 30, dryRun: true });
+  assert.equal(dryRunResult.dryRun, true);
+  assert.equal(dryRunResult.batches, 1);
+  assert.equal(dryRunResult.snapshots, 1);
+  assert.equal(await db.getTotalSnapshotsCount(), 2);
+
+  // Real run with injected DB
+  const realResult = await runCleanup({ db, days: 30, dryRun: false, batchLimit: 10 });
+  assert.equal(realResult.dryRun, false);
+  assert.equal(realResult.deletedBatches, 1);
+  assert.equal(realResult.deletedSnapshots, 1);
+  assert.equal(await db.getTotalSnapshotsCount(), 1);
+});
+
+test('optimizations: getSettings batches queries, foreign key index exists, and getStatus reuses latestPoll', async t => {
+  const { db } = durableDatabase(t);
+  await db.ready();
+
+  // 1. Verify foreign key index exists
+  const indexes = await db.rows("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_snapshots_poll_batch'");
+  assert.equal(indexes.length, 1, 'Index idx_snapshots_poll_batch should exist');
+
+  // 2. Test getSettings
+  await db.setSetting('test_key_1', 'val1');
+  await db.setSetting('test_key_2', 'val2');
+
+  const empty = await db.getSettings([]);
+  assert.deepEqual(empty, {});
+
+  const settings = await db.getSettings(['test_key_1', 'test_key_2', 'nonexistent_key']);
+  assert.equal(settings.test_key_1, 'val1');
+  assert.equal(settings.test_key_2, 'val2');
+  assert.equal(settings.nonexistent_key, null);
+
+  // 3. Test collector getStatus reuses latestPoll
+  const collector = new BusCollector(db, { env: {} });
+  const mockLatestPoll = {
+    id: 999, timestamp: 123456789, records_count: 5,
+    source_provider: 'community', data_coverage: 'stop-arrivals',
+    monitored_stops: '["UTOWN"]'
+  };
+
+  const status = await collector.getStatus({ latestPoll: mockLatestPoll });
+  assert.equal(status.dataProvider, 'community');
+  assert.deepEqual(status.monitoredStops, ['UTOWN']);
+});
+

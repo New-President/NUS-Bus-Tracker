@@ -231,7 +231,8 @@ async function requestJson(url, options = {}) {
   try {
     const headers = { Accept: 'application/json', ...(options.headers || {}) };
     if (options.method && STATE.adminToken) headers.Authorization = `Bearer ${STATE.adminToken}`;
-    const response = await fetch(url, { ...options, headers, cache: 'no-store', signal: controller.signal });
+    const fetchCache = options.cache || (options.method && options.method !== 'GET' ? 'no-store' : 'default');
+    const response = await fetch(url, { ...options, headers, cache: fetchCache, signal: controller.signal });
     const data = await response.json().catch(() => { throw new Error(`Invalid server response (${response.status})`); });
     if (!response.ok || data.success === false) throw new Error(data.error || data.message || `Request failed (${response.status})`);
     return data;
