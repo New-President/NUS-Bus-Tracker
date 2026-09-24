@@ -374,9 +374,6 @@ body {
   transform: translateY(-2px);
 }
 
-.metric-card.highlight {
-  border-left: 4px solid var(--nus-orange);
-}
 
 .metric-header {
   display: flex;
