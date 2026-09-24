@@ -1,4 +1,5 @@
 :root {
+  --theme: dark;
   --nus-blue: #003D7C;
   --nus-orange: #EF7C00;
   --bg-primary: #0b0f19;
@@ -20,6 +21,25 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
+}
+
+[data-theme="light"] {
+  --theme: light;
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f1f5f9;
+  --border-color: #e2e8f0;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --text-dim: #94a3b8;
+
+  --crowd-low: #059669;
+  --crowd-low-bg: rgba(16, 185, 129, 0.12);
+  --crowd-medium: #d97706;
+  --crowd-medium-bg: rgba(217, 119, 6, 0.12);
+  --crowd-high: #dc2626;
+  --crowd-high-bg: rgba(220, 38, 38, 0.12);
 }
 
 /* Custom Modern Dark Scrollbars across app */
@@ -295,6 +315,23 @@ body {
 .btn-sm {
   padding: 4px 10px;
   font-size: 12px;
+}
+
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+
+.theme-toggle-icon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 /* Main Layout */
@@ -3933,6 +3970,257 @@ canvas {
 
 .surge-tip-text strong {
   color: #e0f2fe;
+}
+
+/* ==========================================================================
+   Light Theme Overrides
+   ========================================================================== */
+[data-theme="light"] body {
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+}
+
+[data-theme="light"] * {
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+[data-theme="light"] .app-header {
+  background: #ffffff;
+  border-bottom-color: var(--border-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .poller-pill {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+
+[data-theme="light"] .poller-pill.is-live {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #047857;
+}
+
+[data-theme="light"] .tab-btn {
+  color: #64748b;
+}
+
+[data-theme="light"] .tab-btn:hover {
+  color: var(--nus-blue);
+  background-color: #f1f5f9;
+}
+
+[data-theme="light"] .tab-btn.active {
+  color: var(--nus-blue);
+  border-bottom-color: var(--nus-blue);
+}
+
+[data-theme="light"] .panel {
+  background: var(--bg-card);
+  border-color: var(--border-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .metric-card {
+  background: var(--bg-card);
+  border-color: var(--border-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .metric-card:hover {
+  border-color: var(--nus-blue);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .metric-value {
+  color: #0f172a;
+}
+
+[data-theme="light"] .form-input,
+[data-theme="light"] .form-select,
+[data-theme="light"] .date-input {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+[data-theme="light"] .form-input:focus,
+[data-theme="light"] .form-select:focus,
+[data-theme="light"] .date-input:focus {
+  border-color: var(--nus-blue);
+  box-shadow: 0 0 0 2px rgba(0, 61, 124, 0.15);
+}
+
+[data-theme="light"] .btn-secondary {
+  background-color: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+
+[data-theme="light"] .btn-secondary:hover:not(:disabled) {
+  background-color: #e2e8f0;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+[data-theme="light"] .toggle-group {
+  background-color: #e2e8f0;
+}
+
+[data-theme="light"] .toggle-btn {
+  color: #475569;
+}
+
+[data-theme="light"] .toggle-btn:hover {
+  color: #0f172a;
+}
+
+[data-theme="light"] .toggle-btn.active {
+  background-color: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .filter-pills .btn-secondary {
+  background-color: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+[data-theme="light"] .filter-pills .btn-secondary:hover {
+  background-color: #e2e8f0;
+  color: #0f172a;
+}
+
+[data-theme="light"] .filter-pills .btn-secondary.active {
+  background-color: var(--nus-blue);
+  border-color: var(--nus-blue);
+  color: #ffffff;
+}
+
+[data-theme="light"] .connection-banner.is-info {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e40af;
+}
+
+[data-theme="light"] .connection-banner.is-warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+[data-theme="light"] .connection-banner.is-danger {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+[data-theme="light"] .banner-close {
+  color: inherit;
+}
+
+[data-theme="light"] .chart-canvas-container {
+  background-color: #ffffff;
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .chart-tooltip {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: #cbd5e1;
+  color: #0f172a;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .map-container {
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .map-tiles-dark {
+  filter: none !important;
+}
+
+[data-theme="light"] .leaflet-popup-content-wrapper,
+[data-theme="light"] .leaflet-popup-tip {
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="light"] .stop-popup {
+  color: #0f172a;
+}
+
+[data-theme="light"] .bus-card {
+  background: #ffffff;
+  border-color: var(--border-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .bus-card:hover {
+  border-color: var(--nus-blue);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .bus-card.is-stale {
+  background: #f8fafc;
+  opacity: 0.85;
+}
+
+[data-theme="light"] .vehicle-modal-backdrop {
+  background-color: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+[data-theme="light"] .vehicle-modal-container {
+  background: #ffffff;
+  border-color: var(--border-color);
+  color: #0f172a;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="light"] .vehicle-stat-card {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .vehicle-stat-card .val {
+  color: #0f172a;
+}
+
+[data-theme="light"] .diagnostics-table td {
+  border-bottom-color: #e2e8f0;
+}
+
+[data-theme="light"] .leaderboard-item {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .leaderboard-item:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] .surge-window-card {
+  background: #ffffff;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .surge-window-card.is-active {
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+
+[data-theme="light"] .surge-tip-banner {
+  background: #f0f9ff;
+  border-left-color: #0284c7;
+  color: #0369a1;
+}
+
+[data-theme="light"] .surge-tip-text strong {
+  color: #0c4a6e;
 }
 
 

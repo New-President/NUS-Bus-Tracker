@@ -60,6 +60,7 @@ function dashboard() {
       },
       closest() { return this; },
       setAttribute(name, value) { this[name] = value; },
+      getAttribute(name) { return this[name] ?? null; },
       querySelectorAll() { return []; },
       getBoundingClientRect() { return { left: 0, top: 0, width: 1072, height: 420 }; },
       getContext() {
@@ -148,7 +149,23 @@ function dashboard() {
     requestAnimationFrame(callback) { callback(); return 1; }, cancelAnimationFrame() {},
     document: {
       hidden: false,
+      documentElement: {
+        attributes: new Map(),
+        setAttribute(k, v) { this.attributes.set(k, v); },
+        removeAttribute(k) { this.attributes.delete(k); },
+        getAttribute(k) { return this.attributes.get(k) || null; }
+      },
       getElementById(id) { return elements.get(id) ?? null; },
+      querySelector(selector) {
+        if (selector === 'meta[name="theme-color"]') {
+          return {
+            content: '',
+            setAttribute(k, v) { if (k === 'content') this.content = v; },
+            getAttribute(k) { return k === 'content' ? this.content : null; }
+          };
+        }
+        return null;
+      },
       querySelectorAll() { return []; },
       addEventListener(type, listener) {
         if (!documentListeners.has(type)) documentListeners.set(type, []);
@@ -160,7 +177,25 @@ function dashboard() {
         }
       }
     },
-    window: { devicePixelRatio: 1, addEventListener() {} },
+    localStorage: {
+      _data: new Map(),
+      getItem(k) { return this._data.get(k) ?? null; },
+      setItem(k, v) { this._data.set(k, String(v)); },
+      removeItem(k) { this._data.delete(k); },
+      clear() { this._data.clear(); }
+    },
+    window: {
+      devicePixelRatio: 1,
+      addEventListener() {},
+      matchMedia(query) {
+        return {
+          matches: false,
+          media: query,
+          addEventListener() {},
+          removeEventListener() {}
+        };
+      }
+    },
     L: leaflet,
     fetch: async () => { throw new Error('Unexpected browser network request'); }
   };
@@ -172,7 +207,7 @@ function dashboard() {
     formatLocalDate, formatTime, setupActionButtons, setupFilters, setupTabs,
     setupChartInteractivity, fetchHistory24h,
     openVehicleDashboard, closeVehicleDashboard, renderVehicleDetailMap,
-    renderVehicleDetailChart, setupVehicleDashboardInteractivity,
+    renderVehicleDetailChart, renderVehicleHourlyBarChart, setupVehicleDashboardInteractivity,
     smoothSeries, inactiveReason, nearestTerminal, positionChartTooltip,
     getDistanceToStop, getServicedRoutesForStop, isBusApproachingOrAtStop,
     getBusesNearStop, renderStopPopupHtml, renderVehicleStopProgression,
@@ -185,7 +220,8 @@ function dashboard() {
     getVehicleDutySummary, getSingaporeDayBounds, analyzeVehicleCycles, getStopDwellAndExchangeForVehicle,
     computeStopBottlenecksAndCorridors, detectLectureSurgeWindows, isCurrentTimeInRange,
     extractDwellSessionsFromSnapshots,
-    renderOptimizerView, renderTransitInsights
+    renderOptimizerView, renderTransitInsights,
+    getStoredThemePreference, resolveTheme, getChartThemeColors, applyTheme, toggleTheme, setupThemeControls
   };`, sandbox, { filename: 'public/app.js' });
   return {
     ...sandbox.dashboard, sandbox, markers, polylines, layerGroups,
@@ -1967,6 +2003,77 @@ test('getVehicleDutySummary with snapshots cache excludes snapshots prior to 12:
   assert.equal(duty.activeMinutes, 30, 'Only includes 30 snapshots recorded after midnight');
   assert.equal(duty.activeHoursLabel, '0h 30m');
   assert.ok(duty.distanceKm > 0, 'Calculates non-zero distance for today');
+});
+
+test('theme management: initializes default theme preference and resolves correctly', () => {
+  const ui = dashboard();
+  assert.equal(ui.getStoredThemePreference(), 'system');
+  assert.equal(ui.resolveTheme('system'), 'dark');
+  assert.equal(ui.resolveTheme('light'), 'light');
+  assert.equal(ui.resolveTheme('dark'), 'dark');
+});
+
+test('theme management: applying theme updates documentElement attribute and localStorage', () => {
+  const ui = dashboard();
+  ui.applyTheme('light', true);
+  assert.equal(ui.STATE.theme, 'light');
+  assert.equal(ui.STATE.resolvedTheme, 'light');
+  assert.equal(ui.sandbox.document.documentElement.getAttribute('data-theme'), 'light');
+  assert.equal(ui.sandbox.localStorage.getItem('nus_theme'), 'light');
+
+  ui.applyTheme('dark', true);
+  assert.equal(ui.STATE.theme, 'dark');
+  assert.equal(ui.STATE.resolvedTheme, 'dark');
+  assert.equal(ui.sandbox.document.documentElement.getAttribute('data-theme'), null);
+  assert.equal(ui.sandbox.localStorage.getItem('nus_theme'), 'dark');
+});
+
+test('theme management: toggleTheme switches between light and dark', () => {
+  const ui = dashboard();
+  ui.applyTheme('dark', true);
+  ui.toggleTheme();
+  assert.equal(ui.STATE.theme, 'light');
+  assert.equal(ui.STATE.resolvedTheme, 'light');
+  assert.equal(ui.sandbox.document.documentElement.getAttribute('data-theme'), 'light');
+
+  ui.toggleTheme();
+  assert.equal(ui.STATE.theme, 'dark');
+  assert.equal(ui.STATE.resolvedTheme, 'dark');
+  assert.equal(ui.sandbox.document.documentElement.getAttribute('data-theme'), null);
+});
+
+test('theme management: getChartThemeColors returns adapted palettes for dark and light', () => {
+  const ui = dashboard();
+  ui.applyTheme('dark', false);
+  const darkColors = ui.getChartThemeColors();
+  assert.equal(darkColors.isLight, false);
+  assert.equal(darkColors.grid, '#273553');
+
+  ui.applyTheme('light', false);
+  const lightColors = ui.getChartThemeColors();
+  assert.equal(lightColors.isLight, true);
+  assert.equal(lightColors.grid, '#e2e8f0');
+});
+
+test('theme management: controls wire up button and select dropdown', () => {
+  const ui = dashboard();
+  const toggleBtn = ui.element('btnThemeToggle');
+  const selectTheme = ui.element('selectThemeSetting');
+
+  ui.setupThemeControls();
+
+  // Test clicking toggle button
+  toggleBtn.dispatch('click');
+  assert.equal(ui.STATE.theme, 'light');
+  assert.equal(ui.STATE.resolvedTheme, 'light');
+  assert.equal(toggleBtn.getAttribute('aria-pressed'), 'true');
+
+  // Test selecting dark from dropdown
+  selectTheme.value = 'dark';
+  selectTheme.dispatch('change', { target: { value: 'dark' } });
+  assert.equal(ui.STATE.theme, 'dark');
+  assert.equal(ui.STATE.resolvedTheme, 'dark');
+  assert.equal(toggleBtn.getAttribute('aria-pressed'), 'false');
 });
 
 

@@ -25,6 +25,16 @@
   </script>
   <script defer src="/_vercel/insights/script.js"></script>
   <script defer src="/_vercel/speed-insights/script.js"></script>
+  <!-- Pre-render theme initialization to prevent flash -->
+  <script>
+    (function() {
+      try {
+        const stored = localStorage.getItem('nus_theme');
+        const theme = stored ? stored : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <header class="app-header">
@@ -35,6 +45,7 @@
       </div>
       <div class="header-actions">
         <div class="poller-pill is-idle" id="pollerPill"><span class="pulse-dot" aria-hidden="true"></span><span id="pollerCountdown">Connecting…</span></div>
+        <button class="btn btn-secondary theme-toggle-btn" id="btnThemeToggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme"><span id="themeToggleIcon" class="theme-toggle-icon">☀️</span><span id="themeToggleLabel" class="theme-toggle-label">Light</span></button>
         <button class="btn btn-primary" id="btnPollNow" type="button" disabled>Poll Now</button>
         <a href="/api/export" class="btn btn-secondary" download>Export CSV</a>
       </div>
@@ -196,6 +207,18 @@
         <div class="panel">
           <h2 class="panel-title">Live Feed Access</h2><p class="panel-subtitle" id="feedConfigurationText">Automatic guest access renews daily. The current source and its coverage are shown above.</p>
           <div class="form-group admin-token-group" id="adminTokenGroup" hidden><label for="inputAdminToken">Dashboard admin token:</label><input type="password" id="inputAdminToken" class="form-input" autocomplete="off" spellcheck="false"><small class="form-hint">Required for changes and manual collection on this server. Kept only in this page until you close or reload it.</small></div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-title">Display &amp; Appearance</h2><p class="panel-subtitle">Customize dashboard color theme and visuals</p>
+          <div class="form-group">
+            <label for="selectThemeSetting" class="control-label">Color Theme:</label>
+            <select id="selectThemeSetting" class="form-select">
+              <option value="system">System Default</option>
+              <option value="dark">Dark Theme</option>
+              <option value="light">Light Theme</option>
+            </select>
+            <small class="form-hint">Choose between dark and light themes, or automatically match your operating system appearance.</small>
+          </div>
         </div>
       </div>
     </section>

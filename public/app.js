@@ -154,8 +154,26 @@ function saveStopCrowdStorage() {
   } catch {}
 }
 
+function getStoredThemePreference() {
+  try {
+    return localStorage.getItem('nus_theme') || 'system';
+  } catch {
+    return 'system';
+  }
+}
+
+function resolveTheme(preference = getStoredThemePreference()) {
+  if (preference === 'light' || preference === 'dark') return preference;
+  if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+    return 'light';
+  }
+  return 'dark';
+}
+
 const hourRange = hour => `${String(hour).padStart(2, '0')}:00–${String((hour + 1) % 24).padStart(2, '0')}:00`;
 const STATE = {
+  theme: getStoredThemePreference(),
+  resolvedTheme: resolveTheme(),
   currentTab: 'tab-24h', currentView: 'exact', smoothing: 'smoothed', timeMode: 'rolling', selectedDate: formatLocalDate(),
   timelineZoom: { startIndex: 0, endIndex: BUCKETS_COUNT - 1 },
   availableDates: [], activeRoutes: new Set(['CAMPUS_AVG']), seenRoutes: new Set(), routesMeta: {},
@@ -169,6 +187,114 @@ const STATE = {
   activeBusDwells: new Map(), stopDwellSessions: [],
   refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: ''
 };
+
+function getChartThemeColors() {
+  const isLight = (STATE.resolvedTheme || resolveTheme()) === 'light';
+  return {
+    isLight,
+    grid: isLight ? '#e2e8f0' : '#273553',
+    axisText: isLight ? '#64748b' : '#94a3b8',
+    textMain: isLight ? '#0f172a' : '#f8fafc',
+    textMuted: isLight ? '#64748b' : '#94a3b8',
+    textDim: isLight ? '#94a3b8' : '#64748b',
+    hoverSlot: isLight ? 'rgba(0, 61, 124, 0.06)' : 'rgba(255, 255, 255, 0.06)',
+    hoverStroke: isLight ? '#003D7C' : '#ffffff',
+    hoverText: isLight ? '#0f172a' : '#f1f5f9',
+    nullDot: isLight ? '#cbd5e1' : '#334155'
+  };
+}
+
+function applyTheme(themePreference = STATE.theme, save = true) {
+  STATE.theme = themePreference;
+  const resolved = resolveTheme(themePreference);
+  STATE.resolvedTheme = resolved;
+
+  if (typeof document !== 'undefined') {
+    if (resolved === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', '#ffffff');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', '#0b0f19');
+    }
+  }
+
+  if (save) {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('nus_theme', themePreference);
+      }
+    } catch {}
+  }
+
+  // Update header toggle button appearance
+  const btnToggle = typeof document !== 'undefined' ? document.getElementById('btnThemeToggle') : null;
+  const toggleIcon = typeof document !== 'undefined' ? document.getElementById('themeToggleIcon') : null;
+  const toggleLabel = typeof document !== 'undefined' ? document.getElementById('themeToggleLabel') : null;
+  if (btnToggle) {
+    btnToggle.setAttribute('aria-pressed', resolved === 'light' ? 'true' : 'false');
+    btnToggle.setAttribute('title', resolved === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
+    if (toggleIcon) toggleIcon.textContent = resolved === 'light' ? '🌙' : '☀️';
+    if (toggleLabel) toggleLabel.textContent = resolved === 'light' ? 'Dark' : 'Light';
+  }
+
+  // Update Settings select if present
+  const selectTheme = typeof document !== 'undefined' ? document.getElementById('selectThemeSetting') : null;
+  if (selectTheme && selectTheme.value !== themePreference) {
+    selectTheme.value = themePreference;
+  }
+
+  // Redraw active charts to pick up updated theme colors
+  try {
+    if (typeof renderTimelineChart === 'function') renderTimelineChart();
+    if (typeof renderHourlyBarChart === 'function') renderHourlyBarChart();
+    if (STATE.selectedVehiclePlate && typeof renderVehicleDetailChart === 'function') {
+      const bus = (STATE.liveBuses || []).find(b => b.plate === STATE.selectedVehiclePlate);
+      if (bus) {
+        renderVehicleDetailChart(bus);
+        if (typeof renderVehicleHourlyBarChart === 'function') renderVehicleHourlyBarChart(bus);
+      }
+    }
+  } catch {}
+}
+
+function toggleTheme() {
+  const current = STATE.resolvedTheme || resolveTheme();
+  const next = current === 'light' ? 'dark' : 'light';
+  applyTheme(next, true);
+}
+
+function setupThemeControls() {
+  applyTheme(STATE.theme, false);
+
+  const btnToggle = typeof document !== 'undefined' ? document.getElementById('btnThemeToggle') : null;
+  if (btnToggle) {
+    btnToggle.addEventListener('click', () => {
+      toggleTheme();
+    });
+  }
+
+  const selectTheme = typeof document !== 'undefined' ? document.getElementById('selectThemeSetting') : null;
+  if (selectTheme) {
+    selectTheme.value = STATE.theme;
+    selectTheme.addEventListener('change', (e) => {
+      applyTheme(e.target.value, true);
+    });
+  }
+
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    try {
+      const mq = window.matchMedia('(prefers-color-scheme: light)');
+      mq.addEventListener('change', () => {
+        if (STATE.theme === 'system') {
+          applyTheme('system', false);
+        }
+      });
+    } catch {}
+  }
+}
 const MAX_PASSENGER_DWELL_SEC = 300; // 5 minutes max; dwell exceeding 5 mins is driver rest, layover, or staging downtime
 const ROUTE_COLORS = { CAMPUS_AVG: '#38bdf8', A1: '#FB0101', A2: '#FBAE17', D1: '#9E005D', D2: '#6A1B9A', E: '#00838F', K: '#2E7D32', R1: '#10B981', R2: '#8B5CF6' };
 function routeColor(code) {
@@ -632,17 +758,18 @@ function renderTimelineChart() {
       ctx.fillStyle = color; ctx.fillRect(padding.left, yAt(to), chartW, (to - from) / maxY * chartH);
     }
   }
+  const themeColors = getChartThemeColors();
   ctx.font = isMobile ? '10px sans-serif' : '11px sans-serif'; ctx.textAlign = 'right';
   for (let tick = 0; tick <= 4; tick++) {
     const value = maxY * tick / 4, y = yAt(value);
-    ctx.strokeStyle = '#273553'; ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(width - padding.right, y); ctx.stroke();
-    ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}${STATE.currentView === 'exact' ? '' : '%'}`, padding.left - (isMobile ? 6 : 8), y + (isMobile ? 3 : 4));
+    ctx.strokeStyle = themeColors.grid; ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(width - padding.right, y); ctx.stroke();
+    ctx.fillStyle = themeColors.axisText; ctx.fillText(`${numberLabel(value)}${STATE.currentView === 'exact' ? '' : '%'}`, padding.left - (isMobile ? 6 : 8), y + (isMobile ? 3 : 4));
   }
   ctx.textAlign = 'left'; ctx.fillText(STATE.currentView === 'exact' ? 'Average passengers per bus' : 'Crowd level (%)', padding.left, isMobile ? 14 : 16);
 
   // Vertical lines dividing the view into 24 hourly parts
   ctx.save?.();
-  ctx.strokeStyle = '#1e2b45';
+  ctx.strokeStyle = themeColors.isLight ? '#f1f5f9' : '#1e2b45';
   ctx.lineWidth = 1;
   for (let i = startIdx; i <= endIdx; i++) {
     const d = new Date(buckets[i].timestamp);
@@ -745,11 +872,11 @@ function renderTimelineChart() {
     }
   }
   if (!observed.length) {
-    ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'center'; ctx.font = isMobile ? '12px sans-serif' : '14px sans-serif';
+    ctx.fillStyle = themeColors.textMuted; ctx.textAlign = 'center'; ctx.font = isMobile ? '12px sans-serif' : '14px sans-serif';
     ctx.fillText(STATE.errors.history ? 'History could not be loaded' : 'No reported readings for this view', padding.left + chartW / 2, padding.top + chartH / 2);
   }
   if (STATE.hoveredIndex !== null && STATE.hoveredIndex >= startIdx && STATE.hoveredIndex <= endIdx) {
-    ctx.strokeStyle = '#64748b'; ctx.setLineDash([3, 3]); ctx.beginPath();
+    ctx.strokeStyle = themeColors.textDim; ctx.setLineDash([3, 3]); ctx.beginPath();
     ctx.moveTo(xAt(STATE.hoveredIndex), padding.top); ctx.lineTo(xAt(STATE.hoveredIndex), padding.top + chartH); ctx.stroke(); ctx.setLineDash([]);
   }
   ctx.restore?.();
@@ -1231,11 +1358,12 @@ function renderHourlyBarChart() {
   const occSampleMap = new Map(rows.map(row => [row.hour, numeric(row.occupancy_sample_count)]));
   const crowdMap = new Map(rows.map(row => [row.hour, row.crowd_level]));
   const maxY = Math.max(100, Math.ceil(Math.max(0, ...[...values.values()].filter(value => value !== null)) / 25) * 25);
+  const themeColors = getChartThemeColors();
   ctx.font = isMobile ? '10px sans-serif' : '11px sans-serif'; ctx.textAlign = 'right';
   for (let i = 0; i <= 4; i++) {
     const value = maxY * i / 4, y = top + chartH * (1 - i / 4);
-    ctx.strokeStyle = '#273553'; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + chartW, y); ctx.stroke();
-    ctx.fillStyle = '#94a3b8'; ctx.fillText(`${numberLabel(value)}%`, left - (isMobile ? 6 : 8), y + (isMobile ? 3 : 4));
+    ctx.strokeStyle = themeColors.grid; ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + chartW, y); ctx.stroke();
+    ctx.fillStyle = themeColors.axisText; ctx.fillText(`${numberLabel(value)}%`, left - (isMobile ? 6 : 8), y + (isMobile ? 3 : 4));
   }
   const slotW = chartW / 24;
   const barWidth = Math.max(6, slotW * 0.65);
@@ -1246,18 +1374,18 @@ function renderHourlyBarChart() {
     const isHovered = STATE.campusHourlyHoveredIndex === hour;
 
     if (isHovered) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.fillStyle = themeColors.hoverSlot;
       ctx.fillRect(x, top, slotW, chartH);
     }
 
     ctx.textAlign = 'center';
-    ctx.fillStyle = isHovered ? '#f1f5f9' : '#94a3b8';
+    ctx.fillStyle = isHovered ? themeColors.hoverText : themeColors.textMuted;
     if (hour % (chartW < 500 ? 4 : 2) === 0 || isHovered) {
       ctx.fillText(String(hour).padStart(2, '0'), barX + barWidth / 2, top + chartH + (isMobile ? 16 : 20));
     }
 
     if (value === undefined || value === null) {
-      ctx.fillStyle = isHovered ? '#64748b' : '#334155';
+      ctx.fillStyle = isHovered ? themeColors.textDim : themeColors.nullDot;
       ctx.fillText('·', barX + barWidth / 2, top + chartH - 5);
       continue;
     }
@@ -1268,14 +1396,14 @@ function renderHourlyBarChart() {
     ctx.fillRect(barX, barY, barWidth, barH);
 
     if (isHovered) {
-      ctx.strokeStyle = '#ffffff';
+      ctx.strokeStyle = themeColors.hoverStroke;
       ctx.lineWidth = 1.5;
       if (typeof ctx.strokeRect === 'function') ctx.strokeRect(barX, barY, barWidth, barH);
     }
   }
 
   if (![...values.values()].some(value => value !== null)) {
-    ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'center'; ctx.fillText('No hourly occupancy readings available', left + chartW / 2, top + chartH / 2);
+    ctx.fillStyle = themeColors.textMuted; ctx.textAlign = 'center'; ctx.fillText('No hourly occupancy readings available', left + chartW / 2, top + chartH / 2);
   }
 
   canvas._hourlyMeta = {
@@ -3847,17 +3975,18 @@ function renderVehicleDetailChart(bus) {
     }
   }
 
+  const themeColors = getChartThemeColors();
   ctx.font = '10px sans-serif';
   ctx.textAlign = 'right';
   for (let tick = 0; tick <= 4; tick++) {
     const val = (maxY * tick) / 4;
     const y = yAt(val);
-    ctx.strokeStyle = '#273553';
+    ctx.strokeStyle = themeColors.grid;
     ctx.beginPath();
     ctx.moveTo(padding.left, y);
     ctx.lineTo(width - padding.right, y);
     ctx.stroke();
-    ctx.fillStyle = '#64748b';
+    ctx.fillStyle = themeColors.axisText;
     const tickText = metric === 'crowd' ? `${numberLabel(val)}%` : `${Math.round(val)}`;
     ctx.fillText(tickText, padding.left - 6, y + 3);
   }
@@ -3868,19 +3997,19 @@ function renderVehicleDetailChart(bus) {
   // Vehicle solid line legend
   ctx.fillStyle = color;
   ctx.fillRect(padding.left, 10, 14, 3);
-  ctx.fillStyle = '#f1f5f9';
+  ctx.fillStyle = themeColors.textMain;
   ctx.fillText(`Bus ${plate}`, padding.left + 18, 14);
 
   // Route dashed baseline legend
   const legX = padding.left + 105;
-  ctx.strokeStyle = '#64748b';
+  ctx.strokeStyle = themeColors.textDim;
   ctx.setLineDash([4, 2]);
   ctx.beginPath();
   ctx.moveTo(legX, 11);
   ctx.lineTo(legX + 16, 11);
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.fillStyle = '#94a3b8';
+  ctx.fillStyle = themeColors.textMuted;
   ctx.fillText(`Route ${routeCode} Avg`, legX + 22, 14);
 
   const step = chartW < 380 ? Math.round(count / 3) : (chartW < 550 ? Math.round(count / 4) : Math.round(count / 6));
@@ -3888,7 +4017,7 @@ function renderVehicleDetailChart(bus) {
   const endLabel = isMobile ? formatTime(buckets[lastIdx].timestamp) : `${formatTime(buckets[lastIdx].timestamp)} SGT`;
   const labelY = height - (isMobile ? 10 : 12);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#64748b';
+  ctx.fillStyle = themeColors.textDim;
   for (let i = 0; i < count; i += step) {
     const x = xAt(i);
     if (endX - x < 50) continue;
@@ -3898,7 +4027,7 @@ function renderVehicleDetailChart(bus) {
   ctx.fillText(endLabel, endX, labelY);
 
   // Route baseline (dashed reference line)
-  ctx.strokeStyle = '#475569';
+  ctx.strokeStyle = themeColors.isLight ? '#94a3b8' : '#475569';
   ctx.lineWidth = 1.5;
   ctx.setLineDash([4, 3]);
   ctx.beginPath();
@@ -4034,19 +4163,19 @@ function renderVehicleHourlyBarChart(bus) {
 
   const observed = hourlyValues.filter(v => v !== null);
   const maxY = Math.max(100, Math.ceil(Math.max(0, ...observed) / 25) * 25);
-
+  const themeColors = getChartThemeColors();
   ctx.font = '9px sans-serif';
   ctx.textAlign = 'right';
   const tickSteps = 2;
   for (let i = 0; i <= tickSteps; i++) {
     const val = (maxY * i) / tickSteps;
     const y = padding.top + chartH * (1 - i / tickSteps);
-    ctx.strokeStyle = '#273553';
+    ctx.strokeStyle = themeColors.grid;
     ctx.beginPath();
     ctx.moveTo(padding.left, y);
     ctx.lineTo(width - padding.right, y);
     ctx.stroke();
-    ctx.fillStyle = '#64748b';
+    ctx.fillStyle = themeColors.axisText;
     ctx.fillText(`${numberLabel(val)}%`, padding.left - 4, y + 3);
   }
 
@@ -4059,12 +4188,12 @@ function renderVehicleHourlyBarChart(bus) {
     const isHovered = STATE.vehicleHourlyHoveredIndex === hour;
 
     if (isHovered) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.fillStyle = themeColors.hoverSlot;
       ctx.fillRect(x, padding.top, slotW, chartH);
     }
 
     ctx.textAlign = 'center';
-    ctx.fillStyle = isHovered ? '#f1f5f9' : '#64748b';
+    ctx.fillStyle = isHovered ? themeColors.hoverText : themeColors.textDim;
     const step = chartW < 500 ? 3 : chartW < 750 ? 2 : 1;
     if (hour % step === 0) {
       ctx.fillText(String(hour).padStart(2, '0'), barX + barW / 2, height - 3);
@@ -4072,7 +4201,7 @@ function renderVehicleHourlyBarChart(bus) {
 
     const val = hourlyValues[hour];
     if (val === null) {
-      ctx.fillStyle = '#334155';
+      ctx.fillStyle = themeColors.nullDot;
       ctx.fillText('·', barX + barW / 2, padding.top + chartH - 4);
       continue;
     }
@@ -4084,14 +4213,14 @@ function renderVehicleHourlyBarChart(bus) {
     ctx.fillRect(barX, barY, barW, barH);
 
     if (isHovered) {
-      ctx.strokeStyle = '#ffffff';
+      ctx.strokeStyle = themeColors.hoverStroke;
       ctx.lineWidth = 1.5;
       ctx.strokeRect(barX, barY, barW, barH);
     }
   }
 
   if (!observed.length) {
-    ctx.fillStyle = '#94a3b8';
+    ctx.fillStyle = themeColors.textMuted;
     ctx.textAlign = 'center';
     ctx.font = '13px sans-serif';
     ctx.fillText(`No hourly occupancy readings recorded for ${plate} in this window.`, padding.left + chartW / 2, padding.top + chartH / 2);
@@ -4473,6 +4602,7 @@ function setupActionButtons() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  setupThemeControls();
   setupTabs(); setupFilters(); setupActionButtons(); setupChartInteractivity(); setupVehicleDashboardInteractivity();
   await refreshAllData();
   setInterval(() => { if (!document.hidden) refreshAllData(); }, 30000);
