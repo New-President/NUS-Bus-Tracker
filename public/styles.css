@@ -25,21 +25,27 @@
 
 [data-theme="light"] {
   --theme: light;
-  --bg-primary: #f8fafc;
-  --bg-secondary: #ffffff;
+  --nus-blue: #003D7C;
+  --nus-orange: #EF7C00;
+  --bg-primary: #edf2f7;
+  --bg-secondary: #f8fafc;
   --bg-card: #ffffff;
   --bg-card-hover: #f1f5f9;
-  --border-color: #e2e8f0;
+  --border-color: #cbd5e1;
+  --border-subtle: #e2e8f0;
   --text-main: #0f172a;
-  --text-muted: #64748b;
-  --text-dim: #94a3b8;
+  --text-muted: #475569;
+  --text-dim: #64748b;
 
-  --crowd-low: #059669;
+  --card-shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --card-shadow-hover: 0 6px 16px rgba(0, 61, 124, 0.08), 0 2px 6px rgba(0, 0, 0, 0.04);
+
+  --crowd-low: #047857;
   --crowd-low-bg: rgba(16, 185, 129, 0.12);
-  --crowd-medium: #d97706;
-  --crowd-medium-bg: rgba(217, 119, 6, 0.12);
-  --crowd-high: #dc2626;
-  --crowd-high-bg: rgba(220, 38, 38, 0.12);
+  --crowd-medium: #b45309;
+  --crowd-medium-bg: rgba(245, 158, 11, 0.12);
+  --crowd-high: #b91c1c;
+  --crowd-high-bg: rgba(239, 68, 68, 0.12);
 }
 
 /* Custom Modern Dark Scrollbars across app */
@@ -4225,3 +4231,640 @@ canvas {
 
 
 
+
+/* ==========================================================================
+   Light Theme Overrides
+   ========================================================================== */
+[data-theme="light"] body {
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+}
+
+[data-theme="light"] * {
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+[data-theme="light"] .app-header {
+  background: #ffffff;
+  border-bottom: 2px solid var(--nus-blue);
+  box-shadow: 0 2px 8px rgba(0, 61, 124, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .poller-pill {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+
+[data-theme="light"] .poller-pill.is-live {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #047857;
+}
+
+[data-theme="light"] .tab-btn {
+  color: #475569;
+}
+
+[data-theme="light"] .tab-btn:hover {
+  color: var(--nus-blue);
+  background-color: rgba(0, 61, 124, 0.05);
+}
+
+[data-theme="light"] .tab-btn.active {
+  color: var(--nus-blue);
+  border-bottom: 3px solid var(--nus-blue);
+  background-color: rgba(0, 61, 124, 0.08);
+  font-weight: 700;
+}
+
+[data-theme="light"] .panel {
+  background: var(--bg-card);
+  border-color: var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="light"] .panel-title {
+  color: #0f172a;
+}
+
+[data-theme="light"] .panel-subtitle {
+  color: #64748b;
+}
+
+[data-theme="light"] .metric-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="light"] .metric-card:hover {
+  border-color: var(--nus-blue);
+  box-shadow: var(--card-shadow-hover);
+  transform: translateY(-2px);
+}
+
+[data-theme="light"] .metric-title {
+  color: #475569;
+}
+
+[data-theme="light"] .metric-value {
+  color: #0f172a;
+}
+
+[data-theme="light"] .metric-subtext {
+  color: #64748b;
+}
+
+[data-theme="light"] .form-input,
+[data-theme="light"] .form-select,
+[data-theme="light"] .date-input {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+[data-theme="light"] .form-input:focus,
+[data-theme="light"] .form-select:focus,
+[data-theme="light"] .date-input:focus {
+  border-color: var(--nus-blue);
+  box-shadow: 0 0 0 2px rgba(0, 61, 124, 0.15);
+}
+
+[data-theme="light"] .btn-secondary {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  color: #334155;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .btn-secondary:hover:not(:disabled) {
+  background-color: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+[data-theme="light"] .btn-secondary.active {
+  background-color: var(--nus-blue);
+  border-color: var(--nus-blue);
+  color: #ffffff;
+}
+
+[data-theme="light"] .toggle-group {
+  background-color: #e2e8f0;
+  border: 1px solid #cbd5e1;
+}
+
+[data-theme="light"] .toggle-btn {
+  color: #475569;
+}
+
+[data-theme="light"] .toggle-btn:hover {
+  color: #0f172a;
+}
+
+[data-theme="light"] .toggle-btn.active {
+  background-color: #ffffff;
+  color: var(--nus-blue);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  font-weight: 700;
+}
+
+[data-theme="light"] .filter-pills .btn-secondary {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+[data-theme="light"] .filter-pills .btn-secondary:hover {
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+
+[data-theme="light"] .filter-pills .btn-secondary.active {
+  background-color: var(--nus-blue);
+  border-color: var(--nus-blue);
+  color: #ffffff;
+}
+
+[data-theme="light"] .connection-banner {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e40af;
+}
+
+[data-theme="light"] .connection-banner.is-success {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #166534;
+}
+
+[data-theme="light"] .connection-banner.is-warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+[data-theme="light"] .connection-banner.is-error {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+[data-theme="light"] .banner-close {
+  color: inherit;
+}
+
+/* Charts & Toolbars */
+[data-theme="light"] .chart-wrapper,
+[data-theme="light"] .vehicle-chart-wrapper,
+[data-theme="light"] .vehicle-hourly-chart-wrapper {
+  background: #ffffff;
+  border-color: var(--border-color);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="light"] .chart-nav-btn,
+[data-theme="light"] .chart-zoom-btn {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  color: #334155;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .chart-nav-btn:hover,
+[data-theme="light"] .chart-zoom-btn:hover {
+  background: #f1f5f9;
+  border-color: var(--nus-blue);
+  color: var(--nus-blue);
+}
+
+[data-theme="light"] .timeline-window-badge {
+  background: rgba(0, 61, 124, 0.08);
+  border-color: rgba(0, 61, 124, 0.25);
+  color: var(--nus-blue);
+}
+
+[data-theme="light"] .chart-tooltip {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: #cbd5e1;
+  color: #0f172a;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+/* Route Comparison Cards */
+[data-theme="light"] .comparison-box {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="light"] .comparison-box:hover {
+  border-color: var(--nus-blue);
+  box-shadow: var(--card-shadow-hover);
+  transform: translateY(-2px);
+}
+
+[data-theme="light"] .comparison-header {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+[data-theme="light"] .comparison-metric-main {
+  color: #0f172a;
+}
+
+[data-theme="light"] .comparison-pct {
+  color: #0f172a;
+}
+
+[data-theme="light"] .comparison-pct-label {
+  color: #64748b;
+}
+
+[data-theme="light"] .comparison-meta-group .window-meta {
+  color: #475569;
+}
+
+/* Dwell Leaderboard and Corridors (Resolves invisible words) */
+[data-theme="light"] .leaderboard-item,
+[data-theme="light"] .segment-item {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="light"] .leaderboard-item:hover,
+[data-theme="light"] .segment-item:hover {
+  background: #f8fafc;
+  border-color: var(--nus-blue);
+  box-shadow: var(--card-shadow-hover);
+  transform: translateY(-1px);
+}
+
+[data-theme="light"] .leaderboard-stop-name {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .leaderboard-meta {
+  color: #475569;
+}
+
+[data-theme="light"] .leaderboard-dwell-val {
+  color: var(--nus-blue);
+}
+
+[data-theme="light"] .leaderboard-dwell-label {
+  color: #64748b;
+}
+
+[data-theme="light"] .segment-corridor-name,
+[data-theme="light"] .corridor-from,
+[data-theme="light"] .corridor-to {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .segment-meta {
+  color: #475569;
+}
+
+[data-theme="light"] .fleet-summary-strip {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  color: #475569;
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="light"] .fleet-summary-strip strong {
+  color: var(--nus-blue);
+}
+
+/* Window Items */
+[data-theme="light"] .window-item {
+  background: #ffffff;
+  border-color: var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="light"] .window-time {
+  color: var(--nus-blue);
+}
+
+[data-theme="light"] .window-meta {
+  color: #475569;
+}
+
+/* Surge Window Cards */
+[data-theme="light"] .surge-window-card {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="light"] .surge-window-card:hover {
+  border-color: var(--nus-blue);
+  box-shadow: var(--card-shadow-hover);
+}
+
+[data-theme="light"] .surge-window-card.is-active-window {
+  border-color: #f59e0b;
+  background: #fffdf5;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.15);
+}
+
+[data-theme="light"] .surge-time {
+  color: #0f172a;
+}
+
+[data-theme="light"] .surge-desc {
+  color: #475569;
+}
+
+[data-theme="light"] .surge-tip {
+  background: #f0f9ff;
+  border-left-color: #0284c7;
+  color: #0369a1;
+}
+
+[data-theme="light"] .surge-tip-text strong {
+  color: #0c4a6e;
+}
+
+/* Fleet Bus Cards */
+[data-theme="light"] .bus-card {
+  background: #ffffff;
+  border-color: var(--border-color);
+  box-shadow: var(--card-shadow);
+}
+
+[data-theme="light"] .bus-card:hover {
+  border-color: var(--nus-blue);
+  box-shadow: var(--card-shadow-hover);
+}
+
+[data-theme="light"] .bus-card.is-stale {
+  background: #f8fafc;
+  opacity: 0.85;
+}
+
+[data-theme="light"] .bus-card-inactive {
+  background: rgba(241, 245, 249, 0.7) !important;
+  border-color: #cbd5e1 !important;
+}
+
+[data-theme="light"] .bus-inactive-reason {
+  background: #f1f5f9;
+}
+
+[data-theme="light"] .inactive-reason-title {
+  color: #0f172a;
+}
+
+[data-theme="light"] .inactive-reason-desc {
+  color: #475569;
+}
+
+[data-theme="light"] .bus-plate {
+  color: #475569;
+}
+
+[data-theme="light"] .bus-card-click-hint {
+  color: var(--nus-blue);
+}
+
+/* Headway Pills */
+[data-theme="light"] .headway-pill {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .headway-bus-badge {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+[data-theme="light"] .headway-gap {
+  color: #475569;
+}
+
+/* Map, Popups & Floating Legend */
+[data-theme="light"] .map-container {
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .map-tiles-dark {
+  filter: none !important;
+}
+
+[data-theme="light"] .leaflet-container {
+  background: #e2e8f0 !important;
+}
+
+[data-theme="light"] .map-floating-legend {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: var(--border-color);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .legend-title {
+  color: #475569;
+}
+
+[data-theme="light"] .legend-row {
+  color: #334155;
+}
+
+[data-theme="light"] .leaflet-popup-content-wrapper,
+[data-theme="light"] .leaflet-popup-tip {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12) !important;
+}
+
+[data-theme="light"] .stop-popup-header {
+  border-bottom-color: var(--border-subtle) !important;
+}
+
+[data-theme="light"] .stop-popup-title,
+[data-theme="light"] .map-popup-pax-val {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .stop-popup-bus-row {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .stop-popup-bus-row:hover {
+  background: #f1f5f9;
+  border-color: var(--nus-blue);
+}
+
+[data-theme="light"] .stop-popup-bus-plate {
+  color: #0f172a;
+}
+
+[data-theme="light"] .stop-popup-bus-bottom {
+  border-top-color: #e2e8f0;
+}
+
+[data-theme="light"] .stop-popup-pbar {
+  background: #e2e8f0;
+}
+
+[data-theme="light"] .stop-popup-pax {
+  color: #475569;
+}
+
+/* Vehicle Combined Modal */
+[data-theme="light"] .vehicle-modal-backdrop {
+  background-color: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+[data-theme="light"] .vehicle-modal-container {
+  background: #ffffff;
+  border-color: var(--border-color);
+  color: #0f172a;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.2);
+}
+
+[data-theme="light"] .vehicle-modal-header {
+  background: #f8fafc;
+  border-bottom-color: var(--border-color);
+}
+
+[data-theme="light"] .vehicle-modal-title {
+  color: #0f172a;
+}
+
+[data-theme="light"] .vehicle-modal-sub {
+  color: #64748b;
+}
+
+[data-theme="light"] .vehicle-modal-close {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+[data-theme="light"] .vehicle-modal-close:hover {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+[data-theme="light"] .vehicle-metrics-strip {
+  background: #f8fafc;
+  border-bottom-color: var(--border-color);
+}
+
+[data-theme="light"] .vehicle-metric-item {
+  background: #ffffff;
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .vehicle-metric-label {
+  color: #64748b;
+}
+
+[data-theme="light"] .vehicle-metric-val {
+  color: #0f172a;
+}
+
+[data-theme="light"] .vehicle-dashboard-col {
+  background: #f8fafc;
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .vehicle-col-title {
+  color: #0f172a;
+}
+
+[data-theme="light"] .vehicle-col-sub {
+  color: #64748b;
+}
+
+[data-theme="light"] .vehicle-col-header .btn-sm {
+  background: #ffffff;
+  border-color: var(--border-color);
+  color: #334155;
+}
+
+[data-theme="light"] .vehicle-col-header .btn-sm:hover {
+  background: #f1f5f9;
+  border-color: var(--nus-blue);
+  color: var(--nus-blue);
+}
+
+[data-theme="light"] .vehicle-chart-wrapper,
+[data-theme="light"] .vehicle-hourly-chart-wrapper {
+  background: #ffffff;
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .vehicle-hourly-section,
+[data-theme="light"] .vehicle-stops-section {
+  background: #f8fafc;
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .stop-progression-card {
+  background: #ffffff;
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .stop-progression-card:hover {
+  border-color: var(--nus-blue);
+  background: #f8fafc;
+}
+
+[data-theme="light"] .stop-seq-badge {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+[data-theme="light"] .stop-card-name {
+  color: #0f172a;
+}
+
+[data-theme="light"] .stop-card-set-btn {
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+[data-theme="light"] .stop-card-set-btn:hover {
+  background: rgba(0, 61, 124, 0.08);
+  border-color: var(--nus-blue);
+  color: var(--nus-blue);
+}
+
+[data-theme="light"] .vehicle-chart-stats,
+[data-theme="light"] .vehicle-route-stats {
+  border-top-color: var(--border-color);
+  color: #64748b;
+}
+
+[data-theme="light"] .vehicle-map-wrapper,
+[data-theme="light"] .vehicle-leaflet-map {
+  background: #e2e8f0;
+  border-color: var(--border-color);
+}
+
+[data-theme="light"] .vehicle-inactive-banner {
+  background: #f1f5f9;
+}
+
+/* Diagnostics Table */
+[data-theme="light"] .diagnostics-table td {
+  border-bottom-color: var(--border-subtle);
+}
+
+[data-theme="light"] .diagnostics-table td:first-child {
+  color: #475569;
+  font-weight: 500;
+}
+
+[data-theme="light"] .diagnostics-table td:last-child {
+  color: #0f172a;
+}

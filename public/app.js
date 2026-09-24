@@ -483,7 +483,6 @@ function renderStatus() {
   $('providerWarning').hidden = !status.providerWarning;
   setText('diagSource', feed.name);
   setText('diagCoverage', feed.coverage);
-  setText('feedConfigurationText', guest ? `Automatic NUS guest access renews daily. ${feed.isUnivus ? 'Live readings come directly from uNivUS.' : feed.isPublic ? 'The community arrivals feed is currently selected; its coverage is shown above.' : 'Live readings come directly from ConnectX.'}` : status.authMode === 'public' ? 'The public community feed collects vehicles arriving at the monitored stops. This provider does not require a token.' : 'A manual override selects the direct ConnectX feed. Remove it to restore automatic guest access.');
   $('connectionBanner').className = `connection-banner is-${tone}`;
   $('pollerPill').classList.toggle('is-idle', tone !== 'success');
   setText('diagStatus', STATE.errors.status ? 'Unavailable' : status.connectionState || 'Connecting');
@@ -496,10 +495,10 @@ function renderStatus() {
   const sessionRenewal = guest && (feed.isUnivus || status.sessionRenewAt);
   setText('diagSessionTimingLabel', sessionRenewal ? 'Guest session:' : 'Guest session expiry:');
   setText('diagTokenExpiry', sessionRenewal ? status.sessionRenewAt ? `Renews by ${formatTime(status.sessionRenewAt, true)} SGT` : status.hasToken ? 'Renews automatically each day' : 'Session opens on the next pull' : guest ? status.tokenExpiresAt ? `${formatTime(status.tokenExpiresAt, true)} SGT` : 'Session opens on the next pull' : 'Not applicable');
-  $('adminTokenGroup').hidden = !status.adminRequired;
-  for (const id of ['btnPollNow', 'btnSettingsPollNow']) {
-    $(id).disabled = STATE.polling || status.canPoll === false;
-    $(id).textContent = STATE.polling ? 'Collecting…' : id === 'btnPollNow' ? 'Poll Now' : 'Collect Snapshot Now';
+  const pollBtn = $('btnPollNow');
+  if (pollBtn) {
+    pollBtn.disabled = STATE.polling || status.canPoll === false;
+    pollBtn.textContent = STATE.polling ? 'Collecting…' : 'Poll Now';
   }
   renderCountdown();
 }
@@ -4581,9 +4580,8 @@ function setupActionButtons() {
     } catch (error) { showAction(`Collection failed: ${error.message}`, true); }
     finally { STATE.polling = false; if (STATE.refreshPromise) await STATE.refreshPromise; await refreshAllData({ forceAll: true }); }
   };
-  $('btnPollNow').addEventListener('click', pollNow); $('btnSettingsPollNow').addEventListener('click', pollNow);
+  $('btnPollNow').addEventListener('click', pollNow);
   $('btnCloseBanner')?.addEventListener('click', () => { $('connectionBanner').hidden = true; });
-  $('inputAdminToken').addEventListener('input', event => { STATE.adminToken = event.target.value.trim(); });
   let resizeFrame;
   window.addEventListener('resize', () => {
     cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => {

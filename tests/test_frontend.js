@@ -535,7 +535,6 @@ test('automatic guest access enables collection before any manual token or cache
   };
   ui.renderStatus();
   assert.equal(ui.element('btnPollNow').disabled, false);
-  assert.equal(ui.element('btnSettingsPollNow').disabled, false);
   assert.match(ui.element('connectionMessage').textContent, /Automatic guest access/i);
   assert.match(ui.element('diagToken').textContent, /Automatic guest access/i);
   assert.doesNotMatch(ui.element('pollerCountdown').textContent, /Awaiting live token/i);
@@ -549,7 +548,6 @@ test('public arrivals source enables token-free collection and discloses monitor
     monitoredStops: ['UTOWN', 'KR-MRT'], coverageNote: 'Arriving vehicles at monitored stops only.' };
   ui.renderStatus(); ui.renderSummaryCards();
   assert.equal(ui.element('btnPollNow').disabled, false);
-  assert.equal(ui.element('btnSettingsPollNow').disabled, false);
   assert.equal(ui.element('sourceLink').href, 'https://bus.hewliyang.com/');
   assert.match(ui.element('sourceLink').textContent, /community feed/);
   assert.match(ui.element('coverageSummary').textContent, /monitored stops only.*UTOWN, KR-MRT/);
@@ -579,8 +577,6 @@ test('direct uNivUS source shows configured-route coverage, daily guest renewal,
   assert.match(ui.element('diagTokenExpiry').textContent, /Renews by 11 Sept.*23:50.*SGT/);
   assert.equal(ui.element('diagSessionTimingLabel').textContent, 'Guest session:');
   assert.doesNotMatch(ui.element('diagTokenExpiry').textContent, /expir|unknown/i);
-  assert.match(ui.element('feedConfigurationText').textContent, /directly from uNivUS/);
-  assert.doesNotMatch(ui.element('feedConfigurationText').textContent, /community|fallback/i);
   assert.equal(ui.element('providerWarning').hidden, true);
   assert.equal(ui.markers.length, 1);
   assert.equal(ui.markers[0].location[0], vehicle.lat);
@@ -604,7 +600,6 @@ test('guest renewal remains distinct from the community fallback data source and
   assert.match(ui.element('diagTokenExpiry').textContent, /12 Sept.*00:05.*SGT/);
   assert.equal(ui.element('providerWarning').hidden, false);
   assert.equal(ui.element('providerWarning').textContent, ui.STATE.status.providerWarning);
-  assert.match(ui.element('feedConfigurationText').textContent, /guest access renews daily/);
   assert.equal(ui.element('btnPollNow').disabled, false);
 });
 
@@ -2079,3 +2074,12 @@ test('theme management: controls wire up button and select dropdown', () => {
 
 
 
+
+test('data and api settings: snapshot collection button and live feed access panel are removed', () => {
+  const ui = dashboard();
+  assert.equal(ui.sandbox.document.getElementById('btnSettingsPollNow'), null);
+  assert.equal(ui.sandbox.document.getElementById('feedConfigurationText'), null);
+  assert.equal(ui.sandbox.document.getElementById('adminTokenGroup'), null);
+  assert.ok(ui.element('btnPollNow'));
+  assert.ok(ui.element('selectThemeSetting'));
+});
