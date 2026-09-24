@@ -201,7 +201,7 @@ function dashboard() {
   };
   vm.createContext(sandbox);
   vm.runInContext(app + `\n;globalThis.dashboard = {
-    STATE, renderTimelineChart, renderHourlyBarChart, renderSummaryCards,
+    STATE, renderTimelineChart, renderHourlyBarChart, renderSummaryCards, renderCountdown,
     renderFleetGrid, renderMapBuses, renderRouteFilters, renderStatus,
     initLeafletMap, renderBusStopsOnMap, renderRouteTraceOnMap,
     formatLocalDate, formatTime, setupActionButtons, setupFilters, setupTabs,
@@ -534,7 +534,7 @@ test('automatic guest access enables collection before any manual token or cache
     tokenSource: 'guest', connectionState: 'pending', lastPolledAt: 0
   };
   ui.renderStatus();
-  assert.equal(ui.element('btnPollNow').disabled, false);
+  // btnPollNow removed from header
   assert.match(ui.element('connectionMessage').textContent, /Automatic guest access/i);
   assert.match(ui.element('diagToken').textContent, /Automatic guest access/i);
   assert.doesNotMatch(ui.element('pollerCountdown').textContent, /Awaiting live token/i);
@@ -547,7 +547,7 @@ test('public arrivals source enables token-free collection and discloses monitor
     dataProvider: 'community', coverage: 'stop-arrivals', sourceUrl: 'https://bus.hewliyang.com/',
     monitoredStops: ['UTOWN', 'KR-MRT'], coverageNote: 'Arriving vehicles at monitored stops only.' };
   ui.renderStatus(); ui.renderSummaryCards();
-  assert.equal(ui.element('btnPollNow').disabled, false);
+  // btnPollNow removed from header
   assert.equal(ui.element('sourceLink').href, 'https://bus.hewliyang.com/');
   assert.match(ui.element('sourceLink').textContent, /community feed/);
   assert.match(ui.element('coverageSummary').textContent, /monitored stops only.*UTOWN, KR-MRT/);
@@ -600,7 +600,7 @@ test('guest renewal remains distinct from the community fallback data source and
   assert.match(ui.element('diagTokenExpiry').textContent, /12 Sept.*00:05.*SGT/);
   assert.equal(ui.element('providerWarning').hidden, false);
   assert.equal(ui.element('providerWarning').textContent, ui.STATE.status.providerWarning);
-  assert.equal(ui.element('btnPollNow').disabled, false);
+  // btnPollNow removed from header
 });
 
 test('source links reject unexpected targets and direct-feed errors remain visibly failed', () => {
@@ -615,28 +615,12 @@ test('source links reject unexpected targets and direct-feed errors remain visib
   assert.match(ui.element('connectionBanner').className, /is-error/);
   assert.match(ui.element('connectionMessage').textContent, /application error 4/);
   assert.doesNotMatch(ui.element('connectionMessage').textContent, /connected|returned no vehicles/i);
-  assert.equal(ui.element('btnPollNow').disabled, false);
+  // btnPollNow removed from header
 });
 
-test('failed manual collection displays its error and sends the administrator credential only on the mutation', async () => {
+test('manual poll button is removed from the dashboard header', () => {
   const ui = dashboard();
-  reportedFleet(ui, []);
-  ui.STATE.adminToken = 'browser-admin-token';
-  const requests = [];
-  ui.sandbox.fetch = async (url, options) => {
-    requests.push({ url, options });
-    if (url === '/api/poll-now') return { ok: false, status: 502, json: async () => ({ success: false, error: 'Provider unavailable' }) };
-    const payload = url === '/api/status' ? ui.STATE.status : url === '/api/live' ? { ...ui.STATE.live, buses: [], allFleet: [] }
-      : url.startsWith('/api/history') ? { routeData: [], campusData: [], availableDates: [] } : {};
-    return { ok: true, status: 200, json: async () => payload };
-  };
-  ui.setupActionButtons();
-  await ui.element('btnPollNow').dispatch('click');
-  assert.match(ui.element('actionMessage').textContent, /Collection failed: Provider unavailable/);
-  assert.match(ui.element('actionMessage').className, /is-error/);
-  assert.equal(requests[0].options.headers.Authorization, 'Bearer browser-admin-token');
-  assert.ok(requests.slice(1).every(request => request.options.headers.Authorization === undefined));
-  assert.equal(ui.element('btnPollNow').disabled, false, 'Poll control is restored after a failure');
+  assert.equal(ui.sandbox.document.getElementById('btnPollNow'), null);
 });
 
 test('selecting a specific route filter traces out the route path on the Leaflet map with active stop highlights', () => {
@@ -2080,6 +2064,28 @@ test('data and api settings: snapshot collection button and live feed access pan
   assert.equal(ui.sandbox.document.getElementById('btnSettingsPollNow'), null);
   assert.equal(ui.sandbox.document.getElementById('feedConfigurationText'), null);
   assert.equal(ui.sandbox.document.getElementById('adminTokenGroup'), null);
-  assert.ok(ui.element('btnPollNow'));
+  assert.equal(ui.sandbox.document.getElementById('btnPollNow'), null);
   assert.ok(ui.element('selectThemeSetting'));
+});
+
+
+test('renderCountdown shows layman next update countdown and awaiting next update', () => {
+  const ui = dashboard();
+  ui.STATE.status = { collectionMode: 'on-demand', pollingIntervalSec: 60 };
+  ui.STATE.live = { lastPolledAt: new Date(NOW - 15000).toISOString() };
+  ui.renderCountdown();
+  assert.equal(ui.element('pollerCountdown').textContent, 'Next update in 0m 45s');
+
+  ui.STATE.live.lastPolledAt = new Date(NOW - 70000).toISOString();
+  ui.renderCountdown();
+  assert.equal(ui.element('pollerCountdown').textContent, 'Update due');
+
+  ui.STATE.status = { collectionMode: 'interval' };
+  ui.STATE.nextPollAt = null;
+  ui.renderCountdown();
+  assert.equal(ui.element('pollerCountdown').textContent, 'Awaiting next update');
+
+  ui.STATE.polling = true;
+  ui.renderCountdown();
+  assert.equal(ui.element('pollerCountdown').textContent, 'Updating…');
 });

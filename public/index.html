@@ -46,7 +46,6 @@
       <div class="header-actions">
         <div class="poller-pill is-idle" id="pollerPill"><span class="pulse-dot" aria-hidden="true"></span><span id="pollerCountdown">Connecting…</span></div>
         <button class="btn btn-secondary theme-toggle-btn" id="btnThemeToggle" type="button" aria-label="Toggle light or dark theme" title="Toggle theme"><span id="themeToggleIcon" class="theme-toggle-icon">☀️</span><span id="themeToggleLabel" class="theme-toggle-label">Light</span></button>
-        <button class="btn btn-primary" id="btnPollNow" type="button" disabled>Poll Now</button>
         <a href="/api/export" class="btn btn-secondary" download>Export CSV</a>
       </div>
     </div>
@@ -62,8 +61,8 @@
     <noscript><p class="connection-banner is-warning">Enable JavaScript to load live readings and dashboard controls.</p></noscript>
 
     <section class="summary-cards-grid" aria-label="Latest observations">
-      <div class="metric-card"><div class="metric-header"><span class="metric-title">Latest / Observed Vehicles</span><span class="metric-icon" aria-hidden="true">🚌</span></div><div class="metric-value" id="statActiveBuses">Unknown</div><div class="metric-subtext" id="statActiveBusesSubtext">Waiting for a successful live pull</div></div>
-      <div class="metric-card"><div class="metric-header"><span class="metric-title">Observed Crowd Level</span><span class="metric-icon" aria-hidden="true">👥</span></div><div class="metric-value-row"><span class="metric-value" id="statCampusCrowd">Unknown</span><span class="badge badge-secondary" id="statCampusBadge">No readings</span></div><div class="metric-subtext" id="statCampusAvgOccupancy">Occupancy has not been reported</div></div>
+      <div class="metric-card"><div class="metric-header"><span class="metric-title">Latest / Observed Vehicles</span><span class="metric-icon" aria-hidden="true">🚌</span></div><div class="metric-value" id="statActiveBuses">Unknown</div><div class="metric-subtext" id="statActiveBusesSubtext">Waiting for live update</div></div>
+      <div class="metric-card"><div class="metric-header"><span class="metric-title">Observed Crowd Level</span><span class="metric-icon" aria-hidden="true">👥</span></div><div class="metric-value-row"><span class="metric-value" id="statCampusCrowd">Unknown</span><span class="badge badge-secondary" id="statCampusBadge" hidden></span></div><div class="metric-subtext" id="statCampusAvgOccupancy">Occupancy has not been reported</div></div>
       <div class="metric-card"><div class="metric-header"><span class="metric-title">Most Crowded Observed Service</span><span class="metric-icon" aria-hidden="true">📊</span></div><div class="metric-value" id="statBusiestRoute">Unknown</div><div class="metric-subtext" id="statBusiestRouteDetails">No route occupancy readings available</div></div>
       <div class="metric-card"><div class="metric-header"><span class="metric-title">Quietest Observed Hour</span><span class="metric-icon" aria-hidden="true">🕒</span></div><div class="metric-value" id="statBestWindow">Unknown</div><div class="metric-subtext" id="statBestWindowDetails">Collect live history to compare hours</div></div>
     </section>

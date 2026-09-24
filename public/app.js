@@ -494,17 +494,12 @@ function renderStatus() {
   setText('diagToken', guest ? 'Automatic guest access · Daily renewal' : status.authMode === 'public' ? 'Public arrivals · No token required' : 'Direct route feed');
   const sessionRenewal = guest && (feed.isUnivus || status.sessionRenewAt);
   setText('diagSessionTimingLabel', sessionRenewal ? 'Guest session:' : 'Guest session expiry:');
-  setText('diagTokenExpiry', sessionRenewal ? status.sessionRenewAt ? `Renews by ${formatTime(status.sessionRenewAt, true)} SGT` : status.hasToken ? 'Renews automatically each day' : 'Session opens on the next pull' : guest ? status.tokenExpiresAt ? `${formatTime(status.tokenExpiresAt, true)} SGT` : 'Session opens on the next pull' : 'Not applicable');
-  const pollBtn = $('btnPollNow');
-  if (pollBtn) {
-    pollBtn.disabled = STATE.polling || status.canPoll === false;
-    pollBtn.textContent = STATE.polling ? 'Collecting…' : 'Poll Now';
-  }
+  setText('diagTokenExpiry', sessionRenewal ? status.sessionRenewAt ? `Renews by ${formatTime(status.sessionRenewAt, true)} SGT` : status.hasToken ? 'Renews automatically each day' : 'Session opens on the next update' : guest ? status.tokenExpiresAt ? `${formatTime(status.tokenExpiresAt, true)} SGT` : 'Session opens on the next update' : 'Not applicable');
   renderCountdown();
 }
 
 function renderCountdown() {
-  if (STATE.polling || STATE.status.isPolling) return setText('pollerCountdown', 'Collecting live readings');
+  if (STATE.polling || STATE.status.isPolling) return setText('pollerCountdown', 'Updating…');
   const timestamp = STATE.live.lastPolledAt ?? STATE.status.lastPolledAt;
   const intervalSec = STATE.status.pollingIntervalSec || 60;
   if (STATE.status.collectionMode === 'on-demand') {
@@ -512,14 +507,14 @@ function renderCountdown() {
       const elapsedSec = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000);
       const remainingSec = Math.max(0, intervalSec - elapsedSec);
       return setText('pollerCountdown', remainingSec > 0
-        ? `Next cron pull: ${Math.floor(remainingSec / 60)}m ${String(remainingSec % 60).padStart(2, '0')}s`
-        : 'Cron pull due');
+        ? `Next update in ${Math.floor(remainingSec / 60)}m ${String(remainingSec % 60).padStart(2, '0')}s`
+        : 'Update due');
     }
-    return setText('pollerCountdown', `Every ${Math.round(intervalSec / 60)}m schedule`);
+    return setText('pollerCountdown', `Updates every ${Math.round(intervalSec / 60)}m`);
   }
-  if (!STATE.nextPollAt) return setText('pollerCountdown', 'Awaiting next pull');
+  if (!STATE.nextPollAt) return setText('pollerCountdown', 'Awaiting next update');
   const seconds = Math.max(0, Math.ceil((STATE.nextPollAt - Date.now()) / 1000));
-  setText('pollerCountdown', seconds ? `Next pull: ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : 'Next pull due');
+  setText('pollerCountdown', seconds ? `Next update in ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : 'Update due');
 }
 
 function renderSummaryCards() {
@@ -528,7 +523,7 @@ function renderSummaryCards() {
   const count = hasPull && (!stale || STATE.liveBuses.length) ? STATE.live.activeCount ?? STATE.liveBuses.length : null;
   const known = STATE.live.knownFleetCount ?? STATE.status.knownFleetCount;
   setText('statActiveBuses', count === null ? 'Unknown' : `${numberLabel(count)} / ${numberLabel(known)}`);
-  setText('statActiveBusesSubtext', hasPull ? `${stale ? 'Last known' : 'Latest pull'} / vehicles observed in retained history${feedContext().isPublic ? ' · Stop-arrival coverage' : ''}` : 'Waiting for a successful live pull');
+  setText('statActiveBusesSubtext', hasPull ? `${stale ? 'Last known' : 'Latest update'} / vehicles observed in retained history${feedContext().isPublic ? ' · Stop-arrival coverage' : ''}` : 'Waiting for live update');
   const readings = STATE.liveBuses.map(occupancy).filter(value => value !== null);
   const avg = average(readings);
   const level = crowd(avg);
@@ -4580,7 +4575,6 @@ function setupActionButtons() {
     } catch (error) { showAction(`Collection failed: ${error.message}`, true); }
     finally { STATE.polling = false; if (STATE.refreshPromise) await STATE.refreshPromise; await refreshAllData({ forceAll: true }); }
   };
-  $('btnPollNow').addEventListener('click', pollNow);
   $('btnCloseBanner')?.addEventListener('click', () => { $('connectionBanner').hidden = true; });
   let resizeFrame;
   window.addEventListener('resize', () => {
