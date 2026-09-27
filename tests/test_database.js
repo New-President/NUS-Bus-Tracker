@@ -13,7 +13,7 @@ test('missing provider fields remain unknown and measured zero is preserved', as
   const [unknown, zero] = await db.getLatestLiveBuses(now);
   for (const field of ['lat', 'lng', 'speed', 'capacity', 'crowd_level', 'occupancy', 'ridership']) assert.equal(unknown[field], null, field);
   for (const field of ['lat', 'lng', 'speed', 'occupancy', 'ridership']) assert.equal(zero[field], 0, field);
-  assert.equal(db.storage.type, 'turso');
+  assert.equal(db.storage.type, 'supabase');
   assert.equal(db.storage.persistent, true);
 });
 
@@ -56,7 +56,7 @@ test('a failed or duplicate batch rolls back all records and poll status', async
   const db = createTestDatabase(t);
   const now = Date.now() - 1000;
   await db.recordPoll([bus('EXISTING')], now - 1000);
-  await assert.rejects(() => db.recordPoll([bus('NEW'), bus('NEW')], now), /UNIQUE/);
+  await assert.rejects(() => db.recordPoll([bus('NEW'), bus('NEW')], now), /UNIQUE|duplicate/i);
   assert.equal(await db.getTotalSnapshotsCount(), 1);
   assert.equal((await db.client.execute('SELECT COUNT(*) AS count FROM poll_batches')).rows[0].count, 1);
   assert.equal(await db.getSetting('last_polled_at'), String(now - 1000));
@@ -216,9 +216,9 @@ test('invalid provenance and failed insertions cannot publish a source or advanc
   for (const metadata of invalid) await assert.rejects(() => db.recordPoll([bus('REJECTED')], now, metadata), TypeError);
   await assert.rejects(() => db.recordPoll([bus('DUPLICATE'), bus('DUPLICATE')], now, {
     dataProvider: 'community', coverage: 'stop-arrivals', monitoredStops: ['UTOWN']
-  }), /UNIQUE/);
+  }), /UNIQUE|duplicate/i);
   assert.equal(await db.getTotalSnapshotsCount(), 1);
-  assert.equal((await db.client.execute('SELECT COUNT(*) AS count FROM poll_batches')).rows[0].count, 1);
+  assert.equal(Number((await db.client.execute('SELECT COUNT(*) AS count FROM poll_batches')).rows[0].count), 1);
   assert.equal(await db.getSetting('last_polled_at'), String(now - 1000));
   assert.deepEqual((await db.getDataSources(now - 1000, now)).map(source => source.dataProvider), ['connectx']);
 });
@@ -245,5 +245,5 @@ test('direct uNivUS provenance is supported without changing the default Connect
   await assert.rejects(db.client.execute({
     sql: `INSERT INTO poll_batches(timestamp,records_count,source_provider,data_coverage) VALUES (?,0,'univus','stop-arrivals')`,
     args: [now]
-  }), /CHECK/);
+  }), /CHECK|constraint/i);
 });

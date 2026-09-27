@@ -5,7 +5,7 @@ import { createTestDatabase } from './database_fixture.js';
 import './no_provider_network.js';
 
 process.env.VERCEL = '1';
-for (const key of ['FMS_TOKEN', 'ADMIN_TOKEN', 'CRON_SECRET', 'AWS_LAMBDA_FUNCTION_NAME', 'BUS_PROVIDER', 'BUS_STOPS', 'TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN']) delete process.env[key];
+for (const key of ['FMS_TOKEN', 'ADMIN_TOKEN', 'CRON_SECRET', 'AWS_LAMBDA_FUNCTION_NAME', 'BUS_PROVIDER', 'BUS_STOPS', 'TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN', 'SUPABASE_DB_URL', 'DATABASE_URL']) delete process.env[key];
 const { default: defaultHandler, createHandler } = await import('../api/index.js');
 const { BusCollector } = await import('../src/collector.js');
 const db = createTestDatabase();
@@ -162,8 +162,8 @@ test('serverless errors and unknown routes return usable JSON responses', async 
   assert.equal(typeof unknown.json.error, 'string');
 });
 
-test('default Vercel handler reports missing Turso configuration without a local fallback', async () => {
+test('default Vercel handler reports missing Supabase configuration without a local fallback', async () => {
   const res = await invoke('/api/status', {}, defaultHandler);
   assert.equal(res.status, 503);
-  assert.match(res.json.error, /TURSO_DATABASE_URL.*TURSO_AUTH_TOKEN/);
+  assert.match(res.json.error, /SUPABASE_DB_URL/);
 });

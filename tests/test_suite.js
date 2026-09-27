@@ -587,8 +587,9 @@ test('local scheduling automatically collects on startup and every minute until 
       return [normalizeBus({ vehplate: 'TEST-AUTOMATIC-POLL' }, 'A1', Date.now())];
     }
   });
-  t.after(() => collector.stop());
-  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const flush = async () => {
+    for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  };
 
   collector.start();
   await flush();
@@ -614,9 +615,10 @@ test('local scheduling automatically collects on startup and every minute until 
 
 
 test('database initialization failures are reported before contacting the bus provider', async t => {
-  const { LibsqlError } = await import('@libsql/client/web');
+  const { DatabaseError } = await import('pg');
   let providerCalls = 0;
-  const failure = new LibsqlError('private database SQL and secret credentials', 'SQL_PARSE_ERROR');
+  const failure = new DatabaseError('private database SQL and secret credentials', 0, 'error');
+  failure.code = '42601';
   const db = {
     getSetting: async () => { throw failure; },
     setSetting: async () => { throw failure; }
@@ -628,7 +630,7 @@ test('database initialization failures are reported before contacting the bus pr
   assert.equal(result.success, false);
   assert.equal(result.statusCode, 503);
   assert.equal(result.code, 'database_query_failed');
-  assert.equal(result.databaseCode, 'SQL_PARSE_ERROR');
+  assert.equal(result.databaseCode, '42601');
   assert.equal(providerCalls, 0);
   assert.doesNotMatch(JSON.stringify(result), /private database SQL|secret credentials/);
 });

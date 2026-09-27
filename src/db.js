@@ -7,16 +7,14 @@ export class DatabaseConfigurationError extends TypeError {
   }
 }
 
-/** All application storage uses Turso, including when the HTTP server runs locally. */
+/** All application storage uses Supabase PostgreSQL, including when the HTTP server runs locally. */
 export function createDatabase(env = process.env) {
-  if (typeof env.TURSO_DATABASE_URL !== 'string' || !env.TURSO_DATABASE_URL.trim() ||
-      typeof env.TURSO_AUTH_TOKEN !== 'string' || !env.TURSO_AUTH_TOKEN.trim()) {
-    throw new DatabaseConfigurationError('Configure TURSO_DATABASE_URL and TURSO_AUTH_TOKEN to use the application.');
+  const url = (env.SUPABASE_DB_URL || env.DATABASE_URL || '').trim();
+  if (!url) {
+    throw new DatabaseConfigurationError('Configure SUPABASE_DB_URL to use the application.');
   }
   try {
-    return new RemoteBusDatabase({
-      url: env.TURSO_DATABASE_URL.trim(), authToken: env.TURSO_AUTH_TOKEN
-    });
+    return new RemoteBusDatabase({ url });
   } catch (error) {
     if (error instanceof TypeError) throw new DatabaseConfigurationError(error.message);
     throw error;

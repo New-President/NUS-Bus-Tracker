@@ -3,45 +3,46 @@ export const DAY_MS = 24 * 60 * 60 * 1000;
 export const BUCKET_MS = 1 * 60 * 1000;
 
 const POLL_BATCH_COLUMNS = `
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    timestamp BIGINT NOT NULL,
     records_count INTEGER NOT NULL CHECK(records_count >= 0),
     source_provider TEXT NOT NULL DEFAULT 'connectx' CHECK(source_provider IN ('connectx', 'univus', 'community')),
     data_coverage TEXT NOT NULL DEFAULT 'route-fleet' CHECK(
       (source_provider IN ('connectx', 'univus') AND data_coverage = 'route-fleet') OR
       (source_provider = 'community' AND data_coverage = 'stop-arrivals')
     ),
-    monitored_stops TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(monitored_stops) AND json_type(monitored_stops) = 'array')
+    monitored_stops TEXT NOT NULL DEFAULT '[]'
 `;
 
 export const SNAPSHOT_SCHEMA = `
   CREATE TABLE IF NOT EXISTS poll_batches (${POLL_BATCH_COLUMNS});
   CREATE TABLE IF NOT EXISTS snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    poll_batch_id INTEGER NOT NULL REFERENCES poll_batches(id) ON DELETE CASCADE,
-    timestamp INTEGER NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    poll_batch_id BIGINT NOT NULL REFERENCES poll_batches(id) ON DELETE CASCADE,
+    timestamp BIGINT NOT NULL,
     time_iso TEXT NOT NULL,
     time_str TEXT NOT NULL,
     route_code TEXT NOT NULL,
     vehplate TEXT NOT NULL,
-    lat REAL,
-    lng REAL,
-    speed REAL CHECK(speed IS NULL OR speed >= 0),
+    lat DOUBLE PRECISION,
+    lng DOUBLE PRECISION,
+    speed DOUBLE PRECISION CHECK(speed IS NULL OR speed >= 0),
     capacity INTEGER CHECK(capacity IS NULL OR capacity > 0),
     crowd_level TEXT CHECK(crowd_level IS NULL OR crowd_level IN ('low', 'medium', 'high')),
-    occupancy REAL CHECK(occupancy IS NULL OR occupancy >= 0),
+    occupancy DOUBLE PRECISION CHECK(occupancy IS NULL OR occupancy >= 0),
     ridership INTEGER CHECK(ridership IS NULL OR ridership >= 0),
     UNIQUE(poll_batch_id, vehplate)
   );
+  CREATE INDEX IF NOT EXISTS idx_snapshots_poll_batch ON snapshots(poll_batch_id);
 `;
 
 export const AGGREGATE_COLUMNS = `
-  ROUND(AVG(ridership), 1) AS avg_ridership,
-  ROUND(AVG(occupancy) * 100, 1) AS avg_occupancy_pct,
-  COUNT(*) AS sample_count,
-  COUNT(occupancy) AS occupancy_sample_count,
-  COUNT(ridership) AS ridership_sample_count,
-  COUNT(DISTINCT vehplate) AS active_buses
+  ROUND(AVG(ridership)::numeric, 1) AS avg_ridership,
+  ROUND((AVG(occupancy) * 100)::numeric, 1) AS avg_occupancy_pct,
+  COUNT(*)::integer AS sample_count,
+  COUNT(occupancy)::integer AS occupancy_sample_count,
+  COUNT(ridership)::integer AS ridership_sample_count,
+  COUNT(DISTINCT vehplate)::integer AS active_buses
 `;
 
 function numberOrNull(value, field, minimum = 0, maximum = Infinity, integer = false) {

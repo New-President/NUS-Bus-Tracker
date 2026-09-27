@@ -26,8 +26,11 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@libsql/client": "0.18.0",
     "@vercel/analytics": "^2.0.1",
-    "@vercel/speed-insights": "^2.0.0"
+    "@vercel/speed-insights": "^2.0.0",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.14"
   }
 }

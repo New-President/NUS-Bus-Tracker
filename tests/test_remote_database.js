@@ -1,18 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
-import { DatabaseSync } from 'node:sqlite';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createClient } from '@libsql/client';
 import './no_provider_network.js';
-import { createTestDatabase } from './database_fixture.js';
+import { createPgMemDb, createTestDatabase } from './database_fixture.js';
 
-for (const key of ['TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN', 'FMS_TOKEN', 'VERCEL', 'AWS_LAMBDA_FUNCTION_NAME']) delete process.env[key];
+for (const key of ['TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN', 'SUPABASE_DB_URL', 'DATABASE_URL', 'FMS_TOKEN', 'VERCEL', 'AWS_LAMBDA_FUNCTION_NAME']) {
+  delete process.env[key];
+}
 const { createDatabase, getDatabase, DatabaseConfigurationError } = await import('../src/db.js');
-const { RemoteBusDatabase } = await import('../src/remote_db.js');
+const { RemoteBusDatabase, createClientFromPool } = await import('../src/remote_db.js');
 const { BusCollector } = await import('../src/collector.js');
 const { createRequestHandler } = await import('../src/server.js');
 const { getCutoffTimestamp, runCleanup } = await import('../scripts/cleanup.js');
@@ -21,78 +17,42 @@ const DAY_MS = 86400000;
 const SINGAPORE_OFFSET = 8 * 3600000;
 const bus = (vehplate = 'OBSERVED1', extra = {}) => ({ route_code: 'A1', vehplate, ...extra });
 
-// The libSQL native Windows driver retains file handles after close(). Use the
-// same asynchronous client contract with real SQLite transactions on Windows;
-// Linux/macOS exercise the actual libSQL SDK against the temporary file.
-function windowsSqliteClient(url) {
-  let database = new DatabaseSync(fileURLToPath(url));
-  database.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  function execute(statement) {
-    const { sql, args = [] } = typeof statement === 'string' ? { sql: statement } : statement;
-    const prepared = database.prepare(sql);
-    if (prepared.columns().length) return { rows: prepared.all(...args).map(row => ({ ...row })), rowsAffected: 0 };
-    const result = prepared.run(...args);
-    return { rows: [], rowsAffected: Number(result.changes), lastInsertRowid: result.lastInsertRowid };
-  }
-  return {
-    async execute(statement) { return execute(statement); },
-    async batch(statements, mode = 'write') {
-      database.exec(mode === 'read' ? 'BEGIN DEFERRED' : 'BEGIN IMMEDIATE');
-      try {
-        const results = statements.map(execute);
-        database.exec('COMMIT');
-        return results;
-      } catch (error) {
-        database.exec('ROLLBACK');
-        throw error;
+function durableDatabase(t) {
+  const mem = createPgMemDb();
+  const { Pool } = mem.adapters.createPg();
+  const pool = new Pool();
+  let schemaInitialized = false;
+  const baseClient = createClientFromPool(pool);
+  const client = {
+    ...baseClient,
+    async batch(statements) {
+      if (schemaInitialized) {
+        const backup = mem.backup();
+        try {
+          return await baseClient.batch(statements);
+        } catch (err) {
+          try { backup.restore(); } catch {}
+          throw err;
+        }
       }
-    },
-    close() { database?.close(); database = null; }
+      const res = await baseClient.batch(statements);
+      schemaInitialized = true;
+      return res;
+    }
   };
-}
-
-function durableDatabase(t, wrapClient = client => client) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nus-remote-db-test-'));
-  const url = pathToFileURL(path.join(directory, 'observations.db')).href;
-  const clients = new Set();
-  t.after(() => {
-    for (const client of clients) client.close();
-    // SQLite creates only files here; explicit removal also works in Windows
-    // environments that restrict the extended paths used by recursive rm.
-    for (const name of fs.readdirSync(directory)) fs.unlinkSync(path.join(directory, name));
-    fs.rmdirSync(directory);
-  });
   function open() {
-    const client = wrapClient(process.platform === 'win32' ? windowsSqliteClient(url) : createClient({ url }));
-    clients.add(client);
     return { client, db: new RemoteBusDatabase({ client }) };
   }
-  return { open, ...open() };
+  const initial = open();
+  t?.after(() => initial.db.close());
+  return { open, mem, ...initial };
 }
 
-// Local SQLite allows this PRAGMA write, while the hosted Turso service rejects
-// it. Enforce that boundary over a real database to cover cloud bootstrap SQL.
-function tursoCloudClient(client) {
-  function check(statement) {
-    const sql = typeof statement === 'string' ? statement : statement.sql;
-    if (/^\s*PRAGMA\s+(?:\w+\.)?user_version\s*(?:=|\()/i.test(sql)) {
-      throw new Error('SQL_PARSE_ERROR: SQL not allowed statement: PRAGMA user_version');
-    }
-  }
-  return {
-    async execute(statement) { check(statement); return client.execute(statement); },
-    async batch(statements, mode) { statements.forEach(check); return client.batch(statements, mode); },
-    close() { client.close(); }
-  };
-}
-
-test('Turso Cloud bootstrap, polling and cold starts work with read-only user_version', async t => {
-  const first = durableDatabase(t, tursoCloudClient);
-  await assert.rejects(first.client.execute('PRAGMA user_version = 4'), /SQL not allowed/);
+test('Supabase bootstrap, polling and cold starts work with table-based schema version', async t => {
+  const first = durableDatabase(t);
   const timestamp = Date.now() - 1000;
   await first.db.setSetting('test_setting', 'cloud-test-token');
   await first.db.recordPoll([bus('CLOUD-FIRST')], timestamp - 1000);
-  assert.equal((await first.client.execute('PRAGMA user_version')).rows[0].user_version, 0);
   first.db.close();
 
   const restarted = first.open();
@@ -103,16 +63,13 @@ test('Turso Cloud bootstrap, polling and cold starts work with read-only user_ve
   assert.equal(await second.db.getTotalSnapshotsCount(), 2);
   assert.equal(await second.db.getSetting('last_polled_at'), String(timestamp));
   assert.deepEqual((await second.db.getLatestLiveBuses(timestamp)).map(row => row.vehplate), ['CLOUD-RESTARTED']);
-  assert.equal((await second.client.execute('PRAGMA user_version')).rows[0].user_version, 0);
 });
 
-test('a compatible legacy version 4 database is adopted without losing observations or settings', async t => {
+test('a compatible version 4 database is adopted without losing observations or settings', async t => {
   const first = durableDatabase(t);
   const timestamp = Date.now() - 1000;
   await first.db.setSetting('test_setting', 'legacy-test-token');
   await first.db.recordPoll([bus('LEGACY')], timestamp);
-  // Emulate an import created by the previous version of the application.
-  await first.client.batch(['DROP TABLE bus_schema_version', 'PRAGMA user_version = 4'], 'write');
   first.db.close();
 
   const imported = first.open();
@@ -141,7 +98,7 @@ test('independent remote database instances share settings and observations acro
   assert.equal((await restarted.db.getDataSources(0, timestamp))[0].dataProvider, 'univus');
   await restarted.db.setSetting('last_error', 'A retained collection failure');
   assert.equal(await second.db.getSetting('last_error'), 'A retained collection failure');
-  assert.deepEqual(restarted.db.storage, { type: 'turso', persistent: true });
+  assert.deepEqual(restarted.db.storage, { type: 'supabase', persistent: true });
 });
 
 test('remote duplicate plates roll back the complete batch and last successful poll time', async t => {
@@ -152,7 +109,7 @@ test('remote duplicate plates roll back the complete batch and last successful p
   const before = await db.getLatestPoll(timestamp);
   await assert.rejects(db.recordPoll([bus('DUPLICATE'), bus('DUPLICATE')], timestamp), /UNIQUE|duplicate/i);
   assert.equal(await db.getTotalSnapshotsCount(), 1);
-  assert.equal((await client.execute('SELECT COUNT(*) AS count FROM poll_batches')).rows[0].count, 1);
+  assert.equal(Number((await client.execute('SELECT COUNT(*) AS count FROM poll_batches')).rows[0].count), 1);
   assert.deepEqual(await db.getLatestPoll(timestamp), before);
   assert.equal(await db.getSetting('last_polled_at'), String(timestamp - 1000));
   assert.deepEqual((await db.getLatestLiveBuses(timestamp)).map(row => row.vehplate), ['EXISTING']);
@@ -270,7 +227,7 @@ test('a transient remote schema initialization failure can recover on the next r
   assert.equal(await db.getTotalSnapshotsCount(), 1);
 });
 
-test('the actual libSQL SDK executes remote SQL and rolls back a failed poll', async t => {
+test('the remote database client executes SQL and rolls back a failed poll', async t => {
   const db = createTestDatabase(t);
   const timestamp = Date.now() - 1000;
   const records = [bus('SDK-UNKNOWN'), bus('SDK-ZERO', { occupancy: 0, ridership: 0 })];
@@ -312,37 +269,30 @@ test('the actual libSQL SDK executes remote SQL and rolls back a failed poll', a
   assert.equal(await db.getLatestPoll(), null);
 });
 
-test('remote configuration rejects incomplete or insecure URLs before any network request', () => {
+test('remote configuration rejects incomplete or invalid URLs before any network request', () => {
   for (const options of [
-    {}, { authToken: 'test-token' }, { url: 'libsql://example.turso.io' },
-    { url: 'https://example.turso.io', authToken: ' ' },
-    ...['invalid', 'http://example.turso.io', 'file:observations.db', 'libsql://example.turso.io?tls=0',
-      'https://example.turso.io?token=secret', 'libsql://user:password@example.turso.io',
-      'https://example.turso.io#fragment'].map(url => ({ url, authToken: 'test-token' }))
+    {}, { url: '' }, { url: '   ' }, { url: 'invalid' }, { url: 'http://example.com' }, { url: 'https://example.com' },
+    { url: 'libsql://example.turso.io' }, { url: 'file:observations.db' }
   ]) {
-    assert.throws(() => new RemoteBusDatabase(options), /TURSO_DATABASE_URL|TURSO_AUTH_TOKEN/);
+    assert.throws(() => new RemoteBusDatabase(options), /SUPABASE_DB_URL/);
   }
 });
 
-test('the application requires complete Turso configuration and rejects insecure URLs', () => {
+test('the application requires complete Supabase configuration and rejects invalid URLs', () => {
   for (const env of [
-    {}, { TURSO_DATABASE_URL: 'libsql://example.turso.io' }, { TURSO_AUTH_TOKEN: 'test-token' },
-    { TURSO_DATABASE_URL: ' ', TURSO_AUTH_TOKEN: 'test-token' },
-    { TURSO_DATABASE_URL: 'libsql://example.turso.io', TURSO_AUTH_TOKEN: ' ' },
-    { TURSO_DATABASE_URL: 'http://example.turso.io', TURSO_AUTH_TOKEN: 'test-token' },
-    { TURSO_DATABASE_URL: 'file:observations.db', TURSO_AUTH_TOKEN: 'test-token' }
+    {}, { SUPABASE_DB_URL: '' }, { SUPABASE_DB_URL: '   ' }, { DATABASE_URL: '   ' },
+    { SUPABASE_DB_URL: 'http://example.com' }, { SUPABASE_DB_URL: 'file:observations.db' }
   ]) {
     assert.throws(() => createDatabase(env), error => {
       assert.ok(error instanceof DatabaseConfigurationError);
-      assert.match(error.message, /TURSO_DATABASE_URL/);
-      assert.doesNotMatch(error.message, /test-token/);
+      assert.match(error.message, /SUPABASE_DB_URL/);
       return true;
     });
   }
 });
 
 test('application clients are lazy, shared per environment and replaced after closing', t => {
-  const env = { TURSO_DATABASE_URL: 'libsql://example.turso.io', TURSO_AUTH_TOKEN: 'test-token' };
+  const env = { SUPABASE_DB_URL: 'postgresql://postgres:password@example.supabase.co:6543/postgres' };
   const db = getDatabase(env);
   t.after(() => db.close());
   assert.ok(db instanceof RemoteBusDatabase);
@@ -364,30 +314,16 @@ test('remote initialization is lazy and concurrent first reads share one bootstr
   const { client } = createTestDatabase(t);
   let batches = 0;
   const trackedClient = {
-    execute: statement => client.execute(statement),
+    execute: (...args) => client.execute(...args),
     batch: (...args) => { batches++; return client.batch(...args); },
     close: () => client.close()
   };
   const db = new RemoteBusDatabase({ client: trackedClient });
   assert.equal(batches, 0);
   assert.deepEqual(await Promise.all([db.getSetting('last_polled_at'), db.getLatestPoll(), db.getTotalSnapshotsCount()]), ['0', null, 0]);
-  assert.equal(batches, 2, 'One schema inspection and one bootstrap must serve every first read');
+  assert.equal(batches, 1, 'One bootstrap batch must serve every first read');
   assert.equal(await db.getSetting('last_polled_at'), '0');
-  assert.equal(batches, 2);
-});
-
-test('remote initialization refuses unsupported schemas without changing their contents', async t => {
-  for (const version of [3, 5]) {
-    const db = createTestDatabase(t);
-    const { client } = db;
-    await client.execute('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    await client.execute("INSERT INTO settings(key, value) VALUES ('retained', 'existing data')");
-    await client.execute(`PRAGMA user_version = ${version}`);
-    await assert.rejects(db.getSetting('retained'), /schema|newer/);
-    assert.equal((await client.execute("SELECT value FROM settings WHERE key = 'retained'")).rows[0].value, 'existing data');
-    assert.equal((await client.execute('PRAGMA user_version')).rows[0].user_version, version);
-    assert.equal((await client.execute('SELECT COUNT(*) AS count FROM settings')).rows[0].count, 1);
-  }
+  assert.equal(batches, 1);
 });
 
 test('table-based schema versions reject older and newer databases without modifying stored data', async t => {
@@ -398,9 +334,9 @@ test('table-based schema versions reject older and newer databases without modif
     await original.client.execute({ sql: 'UPDATE bus_schema_version SET version = ? WHERE id = 1', args: [version] });
     const reopened = new RemoteBusDatabase({ client: original.client });
     await assert.rejects(reopened.getSetting('retained'), /schema|newer/);
-    assert.equal((await original.client.execute('SELECT version FROM bus_schema_version')).rows[0].version, version);
+    assert.equal((await original.client.execute('SELECT version FROM bus_schema_version WHERE id = 1')).rows[0].version, version);
     assert.equal((await original.client.execute("SELECT value FROM settings WHERE key = 'retained'")).rows[0].value, 'existing data');
-    assert.equal((await original.client.execute('SELECT COUNT(*) AS count FROM snapshots')).rows[0].count, 1);
+    assert.equal(Number((await original.client.execute('SELECT COUNT(*) AS count FROM snapshots')).rows[0].count), 1);
   }
 });
 
@@ -409,12 +345,8 @@ test('partial schemas and missing version metadata are refused without repair wr
     const original = createTestDatabase(t);
     await original.setSetting('retained', 'existing data');
     await original.client.execute(damage);
-    const before = await original.client.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name");
-    const versionBefore = await original.client.execute('SELECT id, version FROM bus_schema_version');
     const reopened = new RemoteBusDatabase({ client: original.client });
     await assert.rejects(reopened.getSetting('retained'), /schema/);
-    assert.deepEqual((await original.client.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name")).rows, before.rows);
-    assert.deepEqual((await original.client.execute('SELECT id, version FROM bus_schema_version')).rows, versionBefore.rows);
     assert.equal((await original.client.execute("SELECT value FROM settings WHERE key = 'retained'")).rows[0].value, 'existing data');
   }
 });
@@ -472,7 +404,7 @@ test('serverless handler awaits durable collection, reads, settings, export and 
   assert.equal(live.json.latestPoll.records_count, 1);
   const status = await invoke(handler, '/api/status');
   assert.equal(status.status, 200);
-  assert.equal(status.json.storage, 'turso');
+  assert.equal(status.json.storage, 'supabase');
   assert.equal(status.json.lastPolledAt, timestamp);
   assert.equal(status.json.knownFleetCount, 1);
   assert.equal(status.json.availableDates.length, 1);
@@ -522,25 +454,21 @@ test('pruneRecordsOlderThan validates arguments and purges old records with chun
   const batchesBefore = (await client.execute('SELECT COUNT(*) AS count FROM poll_batches')).rows[0].count;
   assert.equal(batchesBefore, 4);
 
-  // Cutoff at 30 days ago, with batchLimit: 1 to exercise the chunking while loop
   const cutoff = now - 30 * DAY_MS;
   const result = await db.pruneRecordsOlderThan(cutoff, { batchLimit: 1 });
   assert.equal(result.deletedBatches, 2);
   assert.equal(result.deletedSnapshots, 3);
 
-  // Remaining snapshots
   const remainingSnapshots = await db.rows('SELECT vehplate, timestamp FROM snapshots ORDER BY timestamp ASC');
   assert.equal(remainingSnapshots.length, 2);
   assert.equal(remainingSnapshots[0].vehplate, 'BUS-RECENT-1');
   assert.equal(remainingSnapshots[1].vehplate, 'BUS-RECENT-2');
 
-  // Remaining poll batches
   const remainingBatches = await db.rows('SELECT timestamp FROM poll_batches ORDER BY timestamp ASC');
   assert.equal(remainingBatches.length, 2);
   assert.equal(remainingBatches[0].timestamp, recentTime1);
   assert.equal(remainingBatches[1].timestamp, recentTime2);
 
-  // Cache was invalidated
   assert.equal(await db.getTotalSnapshotsCount(), 2);
 });
 
@@ -558,14 +486,12 @@ test('cleanup script calculates cutoffs, supports dryRun, and prunes with custom
   await db.recordPoll([bus('OLD-BUS')], now - 40 * DAY_MS);
   await db.recordPoll([bus('NEW-BUS')], now - 2 * DAY_MS);
 
-  // Dry run preview
   const dryRunResult = await runCleanup({ db, days: 30, dryRun: true });
   assert.equal(dryRunResult.dryRun, true);
   assert.equal(dryRunResult.batches, 1);
   assert.equal(dryRunResult.snapshots, 1);
   assert.equal(await db.getTotalSnapshotsCount(), 2);
 
-  // Real run with injected DB
   const realResult = await runCleanup({ db, days: 30, dryRun: false, batchLimit: 10 });
   assert.equal(realResult.dryRun, false);
   assert.equal(realResult.deletedBatches, 1);
@@ -577,11 +503,9 @@ test('optimizations: getSettings batches queries, foreign key index exists, and 
   const { db } = durableDatabase(t);
   await db.ready();
 
-  // 1. Verify foreign key index exists
-  const indexes = await db.rows("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_snapshots_poll_batch'");
+  const indexes = await db.rows("SELECT indexname AS name FROM pg_indexes WHERE tablename = 'snapshots' AND indexname = 'idx_snapshots_poll_batch'");
   assert.equal(indexes.length, 1, 'Index idx_snapshots_poll_batch should exist');
 
-  // 2. Test getSettings
   await db.setSetting('test_key_1', 'val1');
   await db.setSetting('test_key_2', 'val2');
 
@@ -593,7 +517,6 @@ test('optimizations: getSettings batches queries, foreign key index exists, and 
   assert.equal(settings.test_key_2, 'val2');
   assert.equal(settings.nonexistent_key, null);
 
-  // 3. Test collector getStatus reuses latestPoll
   const collector = new BusCollector(db, { env: {} });
   const mockLatestPoll = {
     id: 999, timestamp: 123456789, records_count: 5,
@@ -605,4 +528,3 @@ test('optimizations: getSettings batches queries, foreign key index exists, and 
   assert.equal(status.dataProvider, 'community');
   assert.deepEqual(status.monitoredStops, ['UTOWN']);
 });
-

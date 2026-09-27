@@ -357,19 +357,23 @@ test('hosted CSV exports reject oversized responses with a usable retry hint', a
 });
 
 
-test('database errors identify Turso failures without exposing driver details', async t => {
-  const { LibsqlError } = await import('@libsql/client/web');
+test('database errors identify Supabase failures without exposing driver details', async t => {
+  const { DatabaseError } = await import('pg');
   const { request, db } = await fixture(t);
   for (const [driverCode, expectedCode] of [
-    ['SQL_PARSE_ERROR', 'database_query_failed'], ['SQLITE_READONLY', 'database_access_failed'],
-    ['SERVER_ERROR', 'database_unavailable']
+    ['42601', 'database_query_failed'], ['28P01', 'database_access_failed'],
+    ['08006', 'database_unavailable']
   ]) {
-    db.getAvailableDates = async () => { throw new LibsqlError('private-token https://private.example secret SQL', driverCode); };
+    db.getAvailableDates = async () => {
+      const err = new DatabaseError('private-token https://private.example secret SQL', 0, 'error');
+      err.code = driverCode;
+      throw err;
+    };
     const res = await request('/api/status');
     assert.equal(res.status, 503);
     assert.equal(res.json.code, expectedCode);
     assert.equal(res.json.databaseCode, driverCode);
-    assert.match(res.json.error, /Turso/);
+    assert.match(res.json.error, /Supabase/);
     assert.doesNotMatch(res.data, /private-token|private.example|secret SQL/);
   }
 });
