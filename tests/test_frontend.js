@@ -999,6 +999,35 @@ test('renderFleetGrid and vehicle dashboard modal display inactive reasons', () 
   assert.equal(banner.hidden, true);
 });
 
+test('renderFleetGrid renders visually distinct card and badge classes for active, inactive, and stale buses', () => {
+  const ui = dashboard();
+  const activeBus = bus({ vehplate: 'PD964H', route_code: 'D1', status: 'active', last_seen_at: NOW });
+  const inactiveBus = bus({ vehplate: 'PD649T', route_code: 'A1', status: 'inactive', last_seen_at: NOW - 1800000 });
+  const staleBus = bus({ vehplate: 'PC3957P', route_code: 'D2', status: 'stale', last_seen_at: NOW - 3600000 });
+
+  ui.STATE.allFleet = [activeBus, inactiveBus, staleBus];
+  ui.STATE.liveBuses = [activeBus];
+  ui.renderFleetGrid();
+
+  const gridHtml = ui.element('fleetGrid').innerHTML;
+
+  // Active bus card assertions
+  assert.match(gridHtml, /class="bus-card bus-card-active"[^>]*data-plate="PD964H"/);
+  assert.match(gridHtml, /badge-info badge-active/);
+  assert.match(gridHtml, /live-dot-pulse/);
+  assert.match(gridHtml, /Reported in latest pull/);
+
+  // Inactive bus card assertions
+  assert.match(gridHtml, /class="bus-card bus-card-inactive"[^>]*data-plate="PD649T"/);
+  assert.match(gridHtml, /badge-secondary badge-inactive/);
+  assert.match(gridHtml, /Not in latest pull/);
+
+  // Stale bus card assertions
+  assert.match(gridHtml, /class="bus-card bus-card-inactive bus-card-stale"[^>]*data-plate="PC3957P"/);
+  assert.match(gridHtml, /badge-secondary badge-stale/);
+  assert.match(gridHtml, /Stale · Last known reading/);
+});
+
 test('chart tooltips flip and clamp inside container view when hovering near right edge', async () => {
   const ui = dashboard();
   const testBus = bus({

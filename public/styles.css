@@ -83,6 +83,39 @@ button:disabled, input:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #38bdf8; outline-offset: 3px; }
 .badge-secondary { background: #263246; color: #cbd5e1; }
 .badge-info { background: rgba(56, 189, 248, 0.13); color: #38bdf8; }
+.badge-active {
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  font-weight: 700;
+}
+.badge-inactive {
+  background: #1e293b;
+  color: #94a3b8;
+  border: 1px solid #334155;
+}
+.badge-stale {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+}
+
+.live-dot-pulse {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #10b981;
+  margin-right: 6px;
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  animation: liveDotPulse 1.8s infinite cubic-bezier(0.66, 0, 0, 1);
+  vertical-align: middle;
+}
+@keyframes liveDotPulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
 .connection-banner { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 18px; border: 1px solid #34546b; border-radius: 10px; margin-bottom: 18px; font-size: 13px; background: #152638; color: #cbd5e1; }
 .connection-banner.is-success { border-color: #1d614e; background: #102b29; }
 .connection-banner.is-warning { border-color: #8c631d; background: #30271d; }
@@ -993,6 +1026,10 @@ canvas {
 .bus-card:focus-visible {
   outline: 2px solid #38bdf8;
   outline-offset: 2px;
+}
+
+.bus-card-active {
+  border-top: 3px solid #10b981;
 }
 
 .bus-card-inactive {
@@ -4796,50 +4833,174 @@ canvas {
   color: #001a33;
 }
 
-/* Fleet Bus Cards */
+/* Fleet Bus Cards - Distinct Light Theme States */
 [data-theme="light"] .bus-card {
   background: #ffffff;
   border: 1px solid var(--border-color);
-  border-top: 3px solid var(--nus-blue);
-  box-shadow: var(--card-shadow);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   border-radius: 8px;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.2s ease,
+              opacity 0.2s ease;
 }
 
-[data-theme="light"] .bus-card:hover {
-  border-color: var(--nus-orange);
-  border-top-color: var(--nus-orange);
-  box-shadow: var(--card-shadow-hover);
-  transform: translateY(-2px);
+/* 1. Active Buses (Reported in latest pull) - Crisp, Vibrant & Elevated */
+[data-theme="light"] .bus-card-active {
+  background: #ffffff !important;
+  border: 1.5px solid #86efac !important;
+  border-top: 4px solid #10b981 !important;
+  box-shadow: 0 4px 16px -2px rgba(16, 185, 129, 0.16),
+              0 2px 6px -1px rgba(0, 0, 0, 0.04) !important;
+  opacity: 1 !important;
 }
 
-[data-theme="light"] .bus-card.is-stale {
-  background: #f8fafc;
+[data-theme="light"] .bus-card-active:hover {
+  border-color: #10b981 !important;
+  border-top-color: #059669 !important;
+  box-shadow: 0 12px 28px -4px rgba(16, 185, 129, 0.25),
+              0 6px 10px -2px rgba(0, 0, 0, 0.05) !important;
+  transform: translateY(-3px);
+}
+
+[data-theme="light"] .bus-card-active .bus-plate {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+[data-theme="light"] .bus-card-active .bus-route-badge {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .bus-card-active .bus-card-click-hint {
+  color: #047857;
+  font-weight: 600;
+}
+
+/* 2. Inactive Buses (Not in latest pull) - Soft, Muted & Receding */
+[data-theme="light"] .bus-card-inactive {
+  background: #f1f5f9 !important;
+  border: 1.5px dashed #cbd5e1 !important;
+  border-top: 1.5px dashed #cbd5e1 !important;
+  box-shadow: none !important;
+  opacity: 0.72 !important;
+}
+
+[data-theme="light"] .bus-card-inactive:hover {
+  opacity: 0.96 !important;
+  border-color: #94a3b8 !important;
+  border-top-color: #94a3b8 !important;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06) !important;
+  transform: translateY(-1px);
+}
+
+[data-theme="light"] .bus-card-inactive .bus-route-badge {
+  filter: saturate(0.8);
   opacity: 0.85;
 }
 
-[data-theme="light"] .bus-card-inactive {
-  background: rgba(241, 245, 249, 0.7) !important;
-  border-color: #cbd5e1 !important;
+[data-theme="light"] .bus-card-inactive .bus-plate {
+  color: #64748b;
+  font-weight: 500;
 }
 
-[data-theme="light"] .bus-inactive-reason {
-  background: #f1f5f9;
+[data-theme="light"] .bus-card-inactive .progress-bar-fill {
+  opacity: 0.45;
 }
 
-[data-theme="light"] .inactive-reason-title {
-  color: #001a33;
+[data-theme="light"] .bus-card-inactive .bus-pax {
+  color: #64748b;
 }
 
-[data-theme="light"] .inactive-reason-desc {
-  color: var(--text-muted);
+[data-theme="light"] .bus-card-inactive .bus-meta-row {
+  color: #64748b;
 }
 
-[data-theme="light"] .bus-plate {
-  color: var(--text-muted);
+[data-theme="light"] .bus-card-inactive .bus-inactive-reason {
+  background: #e2e8f0;
+  border-left: 3px solid #94a3b8;
 }
 
-[data-theme="light"] .bus-card-click-hint {
-  color: var(--nus-blue);
+[data-theme="light"] .bus-card-inactive .inactive-reason-title {
+  color: #334155;
+}
+
+[data-theme="light"] .bus-card-inactive .inactive-reason-desc {
+  color: #64748b;
+}
+
+[data-theme="light"] .bus-card-inactive .bus-card-click-hint {
+  color: #64748b;
+  font-weight: 500;
+}
+
+[data-theme="light"] .bus-card-inactive .badge-duty-booster {
+  background: #fed7aa;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+}
+
+[data-theme="light"] .bus-card-inactive .badge-duty-standby {
+  background: #e2e8f0;
+  color: #64748b;
+  border: 1px solid #cbd5e1;
+}
+
+[data-theme="light"] .bus-card-inactive .badge-duty-full-day {
+  background: #bae6fd;
+  color: #0369a1;
+  border: 1px solid #7dd3fc;
+}
+
+/* 3. Stale Buses (Last known reading) - Subtle Amber Warning */
+[data-theme="light"] .bus-card-stale {
+  background: #fffbeb !important;
+  border: 1.5px dashed #fcd34d !important;
+  border-top: 1.5px dashed #fcd34d !important;
+  box-shadow: none !important;
+  opacity: 0.8 !important;
+}
+
+[data-theme="light"] .bus-card-stale:hover {
+  opacity: 1 !important;
+  border-color: #f59e0b !important;
+  border-top-color: #f59e0b !important;
+  box-shadow: 0 6px 16px rgba(245, 158, 11, 0.12) !important;
+  transform: translateY(-1px);
+}
+
+/* Status Badges in Light Theme */
+[data-theme="light"] .badge-secondary {
+  background: #e2e8f0;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+[data-theme="light"] .badge-info {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+[data-theme="light"] .badge-active {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1.5px solid #6ee7b7;
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(16, 185, 129, 0.1);
+}
+
+[data-theme="light"] .badge-inactive {
+  background: #e2e8f0;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  font-weight: 500;
+}
+
+[data-theme="light"] .badge-stale {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
   font-weight: 600;
 }
 

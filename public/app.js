@@ -1515,11 +1515,13 @@ function renderFleetGrid() {
   computeAllRouteHeadways(STATE.liveBuses);
   $('fleetGrid').innerHTML = buses.map(bus => {
     const status = fleetStatus(bus), active = status === 'active', level = busCrowd(bus);
-    const label = status === 'stale' || stale ? 'Stale · Last known reading' : active ? 'Reported in latest pull' : 'Not in latest pull';
-    const reasonHtml = !active || stale ? inactiveReasonMarkup(bus) : '';
+    const isStale = status === 'stale' || stale;
+    const isLiveActive = active && !stale;
+    const label = isStale ? 'Stale · Last known reading' : isLiveActive ? 'Reported in latest pull' : 'Not in latest pull';
+    const reasonHtml = !isLiveActive ? inactiveReasonMarkup(bus) : '';
 
     const hw = STATE.vehicleHeadways?.get(bus.vehplate);
-    const bunchedBadge = active && !stale && hw && hw.isBunched
+    const bunchedBadge = isLiveActive && hw && hw.isBunched
       ? `<span class="badge badge-bunched">⚠️ Bunched (${hw.headwayFromPrevMin || '1.5'}m behind ${escapeHtml(hw.prevPlate || 'bus')})</span>`
       : '';
     const duty = getVehicleDutySummary(bus.vehplate);
@@ -1529,7 +1531,11 @@ function renderFleetGrid() {
       : 'Today';
     const dutyTelemetry = `<div class="bus-duty-telemetry" style="font-size:0.75rem;color:#94a3b8;margin-top:4px;">📅 ${labelPrefix}: ${duty.activeHoursLabel} active · ~${duty.distanceKm} km</div>`;
 
-    return `<article class="bus-card ${!active || stale ? 'bus-card-inactive' : ''}" data-plate="${escapeHtml(bus.vehplate)}" tabindex="0" role="button" aria-label="Open vehicle dashboard for ${escapeHtml(bus.vehplate)}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${active && !stale ? 'badge-info' : 'badge-secondary'}">${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span>${bunchedBadge}${dutyBadge}</div>${busReadingsMarkup(bus)}${dutyTelemetry}${reasonHtml}<span class="bus-card-click-hint">Click to view bus dashboard →</span></article>`;
+    const statusBadgeClass = isLiveActive ? 'badge-info badge-active' : isStale ? 'badge-secondary badge-stale' : 'badge-secondary badge-inactive';
+    const statusDot = isLiveActive ? '<span class="live-dot-pulse" aria-hidden="true"></span>' : '';
+    const cardClass = isLiveActive ? 'bus-card bus-card-active' : `bus-card bus-card-inactive${isStale ? ' bus-card-stale' : ''}`;
+
+    return `<article class="${cardClass}" data-plate="${escapeHtml(bus.vehplate)}" tabindex="0" role="button" aria-label="Open vehicle dashboard for ${escapeHtml(bus.vehplate)}"><div class="bus-card-top"><span class="bus-route-badge" style="background-color:${routeColor(bus.route_code)}">${escapeHtml(bus.route_code)}</span><span class="bus-plate">${escapeHtml(bus.vehplate)}</span></div><div class="bus-card-status"><span class="badge ${statusBadgeClass}">${statusDot}${label}</span><span class="badge ${level.badge}">${level.label} occupancy</span>${bunchedBadge}${dutyBadge}</div>${busReadingsMarkup(bus)}${dutyTelemetry}${reasonHtml}<span class="bus-card-click-hint">Click to view bus dashboard →</span></article>`;
   }).join('');
 }
 
