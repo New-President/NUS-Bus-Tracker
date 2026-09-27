@@ -2089,3 +2089,24 @@ test('renderCountdown shows layman next update countdown and awaiting next updat
   ui.renderCountdown();
   assert.equal(ui.element('pollerCountdown').textContent, 'Updating…');
 });
+
+test('renderCountdown holds Update due until newer data timestamp arrives', () => {
+  const ui = dashboard();
+  const baseTime = NOW;
+  ui.STATE.polling = false;
+  ui.STATE.status = { collectionMode: 'interval', pollingIntervalSec: 60 };
+  ui.STATE.nextPollAt = baseTime - 1000; // time passed
+  ui.renderCountdown();
+  assert.equal(ui.element('pollerCountdown').textContent, 'Update due');
+  assert.equal(ui.STATE.waitingForNewData, true);
+
+  // Even if nextPollAt is updated to future, if still waitingForNewData, hold "Update due"
+  ui.STATE.nextPollAt = baseTime + 60000;
+  ui.renderCountdown();
+  assert.equal(ui.element('pollerCountdown').textContent, 'Update due');
+
+  // When fresh data arrives with newer timestamp, waitingForNewData resets
+  ui.STATE.waitingForNewData = false;
+  ui.renderCountdown();
+  assert.equal(ui.element('pollerCountdown').textContent, 'Next update in 1m 00s');
+});

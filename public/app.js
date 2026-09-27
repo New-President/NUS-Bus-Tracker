@@ -185,7 +185,8 @@ const STATE = {
   selectedVehiclePlate: null, vehicleDetailMap: null, vehicleDetailMetric: 'crowd', vehicleMarker: null, vehicleRouteTraceGroup: null, vehicleHoveredIndex: null, vehicleHourlyHoveredIndex: null,
   stopCrowdStorage: loadStopCrowdStorage(), vehicleSnapshotsCache: new Map(), vehicleMovement: new Map(),
   activeBusDwells: new Map(), stopDwellSessions: [],
-  refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: ''
+  refreshPromise: null, historyRequest: 0, nextPollAt: null, polling: false, adminToken: '',
+  waitingForNewData: false, lastObservedPollAt: null, lastDueFetchAttempt: 0
 };
 
 function getChartThemeColors() {
@@ -409,6 +410,15 @@ async function refreshAllData({ forceAll = false } = {}) {
         STATE.availableDates = Array.isArray(data.availableDates) ? data.availableDates : [];
         STATE.nextPollAt = numeric(data.nextPollInSec) === null ? null : Date.now() + data.nextPollInSec * 1000;
         STATE.lastFetched.status = Date.now();
+        const incomingPollAt = data.lastPolledAt;
+        if (incomingPollAt) {
+          if (!STATE.lastObservedPollAt) {
+            STATE.lastObservedPollAt = incomingPollAt;
+          } else if (new Date(incomingPollAt).getTime() > new Date(STATE.lastObservedPollAt).getTime()) {
+            STATE.lastObservedPollAt = incomingPollAt;
+            STATE.waitingForNewData = false;
+          }
+        }
       }]);
     }
     if (shouldFetchLive) {
@@ -417,6 +427,15 @@ async function refreshAllData({ forceAll = false } = {}) {
         STATE.liveBuses = Array.isArray(data.buses) ? data.buses : [];
         STATE.allFleet = Array.isArray(data.allFleet) ? data.allFleet : STATE.liveBuses;
         STATE.lastFetched.live = Date.now();
+        const incomingPollAt = data.lastPolledAt;
+        if (incomingPollAt) {
+          if (!STATE.lastObservedPollAt) {
+            STATE.lastObservedPollAt = incomingPollAt;
+          } else if (new Date(incomingPollAt).getTime() > new Date(STATE.lastObservedPollAt).getTime()) {
+            STATE.lastObservedPollAt = incomingPollAt;
+            STATE.waitingForNewData = false;
+          }
+        }
       }]);
     }
     if (shouldFetchAnalytics) {
@@ -426,9 +445,10 @@ async function refreshAllData({ forceAll = false } = {}) {
       }]);
     }
 
+    const fetchOptions = forceAll ? { cache: 'no-cache' } : {};
     const tasks = [
       ...resources.map(async ([name, url, apply]) => {
-        try { apply(await requestJson(url)); delete STATE.errors[name]; }
+        try { apply(await requestJson(url, fetchOptions)); delete STATE.errors[name]; }
         catch (error) { STATE.errors[name] = error.message; }
       })
     ];
@@ -503,18 +523,57 @@ function renderCountdown() {
   const timestamp = STATE.live.lastPolledAt ?? STATE.status.lastPolledAt;
   const intervalSec = STATE.status.pollingIntervalSec || 60;
   if (STATE.status.collectionMode === 'on-demand') {
+    if (STATE.waitingForNewData) return setText('pollerCountdown', 'Update due');
     if (timestamp) {
       const elapsedSec = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000);
       const remainingSec = Math.max(0, intervalSec - elapsedSec);
-      return setText('pollerCountdown', remainingSec > 0
-        ? `Next update in ${Math.floor(remainingSec / 60)}m ${String(remainingSec % 60).padStart(2, '0')}s`
-        : 'Update due');
+      if (remainingSec <= 0) {
+        STATE.waitingForNewData = true;
+        return setText('pollerCountdown', 'Update due');
+      }
+      return setText('pollerCountdown', `Next update in ${Math.floor(remainingSec / 60)}m ${String(remainingSec % 60).padStart(2, '0')}s`);
     }
     return setText('pollerCountdown', `Updates every ${Math.round(intervalSec / 60)}m`);
   }
+
   if (!STATE.nextPollAt) return setText('pollerCountdown', 'Awaiting next update');
-  const seconds = Math.max(0, Math.ceil((STATE.nextPollAt - Date.now()) / 1000));
-  setText('pollerCountdown', seconds ? `Next update in ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : 'Update due');
+  if (STATE.waitingForNewData) return setText('pollerCountdown', 'Update due');
+
+  const seconds = Math.ceil((STATE.nextPollAt - Date.now()) / 1000);
+  if (seconds <= 0) {
+    STATE.waitingForNewData = true;
+    return setText('pollerCountdown', 'Update due');
+  }
+  setText('pollerCountdown', `Next update in ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`);
+}
+
+function checkAutoRefresh() {
+  if (document.hidden || STATE.polling || STATE.status.isPolling || STATE.refreshPromise) return;
+  const timestamp = STATE.live.lastPolledAt ?? STATE.status.lastPolledAt;
+  const intervalSec = STATE.status.pollingIntervalSec || 60;
+  let isDue = STATE.waitingForNewData;
+
+  if (!isDue) {
+    if (STATE.status.collectionMode === 'on-demand') {
+      if (timestamp) {
+        const elapsedSec = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000);
+        isDue = elapsedSec >= intervalSec;
+      }
+    } else if (STATE.nextPollAt) {
+      isDue = Date.now() >= STATE.nextPollAt;
+    } else if (timestamp) {
+      const elapsedSec = Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000);
+      isDue = elapsedSec >= intervalSec;
+    }
+  }
+
+  if (isDue) {
+    const now = Date.now();
+    if (now - (STATE.lastDueFetchAttempt || 0) >= 3000) {
+      STATE.lastDueFetchAttempt = now;
+      refreshAllData({ forceAll: true });
+    }
+  }
 }
 
 function renderSummaryCards() {
@@ -4597,7 +4656,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupThemeControls();
   setupTabs(); setupFilters(); setupActionButtons(); setupChartInteractivity(); setupVehicleDashboardInteractivity();
   await refreshAllData();
-  setInterval(() => { if (!document.hidden) refreshAllData(); }, 30000);
-  setInterval(() => { if (!document.hidden) { renderCountdown(); if (telemetryStale()) { renderStatus(); renderSummaryCards(); } } }, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAllData(); });
+  setInterval(() => { if (!document.hidden) refreshAllData(); }, 60000);
+  setInterval(() => {
+    if (!document.hidden) {
+      renderCountdown();
+      checkAutoRefresh();
+      if (telemetryStale()) { renderStatus(); renderSummaryCards(); }
+    }
+  }, 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAllData({ forceAll: true }); });
 });

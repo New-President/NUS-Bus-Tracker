@@ -7,6 +7,7 @@ import { DatabaseConfigurationError, getDatabase } from './db.js';
 import { BusCollector } from './collector.js';
 import { databaseFailure } from './database_errors.js';
 import { NUS_ROUTES } from './routes.js';
+import { getCronJobStatus } from './cron_job_sync.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const DAY_MS = 86400000;
@@ -167,22 +168,28 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
       if (pathname === '/api/status') {
         const cached = getCached('status');
         if (cached) {
-          return sendJson(res, 200, cached, 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
+          return sendJson(res, 200, cached, 'public, max-age=0, s-maxage=2, must-revalidate');
         }
-        const [status, fleet, availableDates] = await Promise.all([
-          collector.getStatus(), db.getAllFleetStatus(), db.getAvailableDates()
+        const [status, fleet, availableDates, cronJob] = await Promise.all([
+          collector.getStatus(), db.getAllFleetStatus(), db.getAvailableDates(),
+          getCronJobStatus(env)
         ]);
+        const nextPollAt = cronJob?.nextExecution || (status.nextPollInSec !== null && status.nextPollInSec !== undefined ? now + status.nextPollInSec * 1000 : null);
+        const nextPollInSec = nextPollAt ? Math.max(0, Math.ceil((nextPollAt - now) / 1000)) : status.nextPollInSec;
         const responseData = { ...status, routes: NUS_ROUTES,
           knownFleetCount: fleet.length, availableDates,
           timeZone: 'Asia/Singapore', storage: db.storage.type,
-          adminRequired: Boolean(env.ADMIN_TOKEN) || !localRequest(req, env) };
-        setCached('status', responseData, 30000);
-        return sendJson(res, 200, responseData, 'public, max-age=15, s-maxage=30, stale-while-revalidate=60');
+          adminRequired: Boolean(env.ADMIN_TOKEN) || !localRequest(req, env),
+          cronJob: cronJob || null,
+          nextPollAt,
+          nextPollInSec };
+        setCached('status', responseData, 2000);
+        return sendJson(res, 200, responseData, 'public, max-age=0, s-maxage=2, must-revalidate');
       }
       if (pathname === '/api/live') {
         const cached = getCached('live');
         if (cached) {
-          return sendJson(res, 200, cached, 'public, max-age=10, s-maxage=15, stale-while-revalidate=30');
+          return sendJson(res, 200, cached, 'public, max-age=0, s-maxage=2, must-revalidate');
         }
         const latestPollPromise = db.getLatestPoll();
         const [buses, allFleet, latestPoll, status] = await Promise.all([
@@ -195,8 +202,8 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
           inactiveCount: allFleet.filter(bus => bus.status === 'inactive').length,
           staleCount: allFleet.filter(bus => bus.status === 'stale').length,
           knownFleetCount: allFleet.length, routes: NUS_ROUTES };
-        setCached('live', responseData, 15000);
-        return sendJson(res, 200, responseData, 'public, max-age=10, s-maxage=15, stale-while-revalidate=30');
+        setCached('live', responseData, 2000);
+        return sendJson(res, 200, responseData, 'public, max-age=0, s-maxage=2, must-revalidate');
       }
       if (pathname === '/api/history/24h') {
         const cacheKey = 'history:' + url.search;
