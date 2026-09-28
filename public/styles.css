@@ -4474,31 +4474,35 @@ canvas {
    Navigation Tabs (Solid NUS Segmented Navigation)
    ========================================================================== */
 [data-theme="light"] .tab-nav {
-  background: #ffffff;
-  border-bottom: 3px solid var(--nus-blue);
-  padding: 0 10px;
-  gap: 4px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  background: transparent;
+  border-bottom: 2px solid #e2e8f0;
+  padding: 0 4px;
+  gap: 8px;
+  box-shadow: none;
 }
 
 [data-theme="light"] .tab-btn {
-  color: #334155;
+  color: #64748b;
   font-weight: 600;
+  font-size: 14px;
   border-radius: 6px 6px 0 0;
-  padding: 11px 18px;
+  padding: 12px 18px;
   border: none;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
   background: transparent;
   transition: all 0.15s ease-in-out;
 }
 
 [data-theme="light"] .tab-btn:hover {
   color: var(--nus-blue);
-  background-color: #e8eff7;
+  background-color: #f1f5f9;
 }
 
 [data-theme="light"] .tab-btn.active {
-  color: #ffffff !important;
-  background: var(--nus-blue);
+  color: var(--nus-blue) !important;
+  border-bottom: 3px solid var(--nus-orange);
+  background: transparent;
   font-weight: 700;
 }
 
@@ -4579,16 +4583,19 @@ canvas {
   font-weight: 700;
 }
 
-[data-theme="light"] .filter-pills .btn-secondary {
+[data-theme="light"] .filter-pills .btn-secondary,
+[data-theme="light"] .route-pill {
   background-color: #ffffff;
-  border-color: #cbd5e1;
+  border: 1px solid #cbd5e1;
   color: #475569;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 
-[data-theme="light"] .filter-pills .btn-secondary:hover {
-  background-color: #e8eff7;
-  border-color: var(--nus-blue);
-  color: var(--nus-blue);
+[data-theme="light"] .filter-pills .btn-secondary:hover,
+[data-theme="light"] .route-pill:hover {
+  background-color: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
 }
 
 [data-theme="light"] .filter-pills .btn-secondary.active {
@@ -4596,6 +4603,19 @@ canvas {
   border-color: var(--nus-blue);
   color: #ffffff;
   font-weight: 700;
+}
+
+[data-theme="light"] .route-pill.active {
+  background: color-mix(in srgb, var(--c, var(--nus-blue)) 14%, #ffffff);
+  border-color: var(--c, var(--nus-blue));
+  color: #001a33;
+  font-weight: 700;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--c, var(--nus-blue)) 20%, transparent);
+}
+
+[data-theme="light"] .route-pill.active .route-pill-dot {
+  opacity: 1;
+  box-shadow: 0 0 4px var(--c, var(--nus-blue));
 }
 
 /* Charts & Toolbars */
@@ -5004,28 +5024,105 @@ canvas {
   font-weight: 600;
 }
 
-/* Headway Pills */
-[data-theme="light"] .headway-pill {
-  background: #ffffff;
-  border: 1px solid var(--border-color);
+/* Map Route Filter Pills */
+[data-theme="light"] .map-pill {
+  background-color: #ffffff;
+  color: #334155;
+  border: 1px solid #cbd5e1;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .map-pill:hover {
+  background-color: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+[data-theme="light"] .map-pill.active {
+  background-color: var(--c, var(--nus-blue));
+  border-color: var(--c, var(--nus-blue));
+  color: #ffffff;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--c, var(--nus-blue)) 35%, transparent);
+}
+
+[data-theme="light"] .map-pill[data-map-route="A2"].active {
+  color: #001a33;
+  font-weight: 800;
+}
+
+[data-theme="light"] .map-pill[data-map-route="all"].active {
+  background-color: var(--nus-blue);
+  border-color: var(--nus-blue);
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 61, 124, 0.25);
+}
+
+/* 1-Minute Live Headway & Bus Bunching Strip */
+[data-theme="light"] .map-headway-strip {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .headway-route-group {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .headway-route-tag {
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 [data-theme="light"] .headway-bus-badge {
   background: #e8eff7;
   color: var(--nus-blue);
+  border: 1px solid #b6d2ec;
   font-weight: 700;
 }
 
-[data-theme="light"] .headway-gap {
-  color: var(--text-muted);
+[data-theme="light"] .headway-bus-badge.is-bunched {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1.5px solid #f87171;
 }
 
-/* Map, Popups & Floating Legend */
-[data-theme="light"] .map-container {
-  border: 2px solid var(--nus-blue);
-  border-radius: 8px;
-  overflow: hidden;
+[data-theme="light"] .headway-gap {
+  color: #475569;
+  font-weight: 600;
+}
+
+[data-theme="light"] .headway-gap.is-bunched {
+  color: #b91c1c;
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+/* Map Viewport & Controls */
+[data-theme="light"] .map-viewport-container {
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 16px rgba(0, 61, 124, 0.08);
+}
+
+[data-theme="light"] .leaflet-bar {
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+[data-theme="light"] .leaflet-bar a {
+  background-color: #ffffff !important;
+  color: #334155 !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+
+[data-theme="light"] .leaflet-bar a:hover {
+  background-color: #f1f5f9 !important;
+  color: var(--nus-blue) !important;
 }
 
 [data-theme="light"] .map-tiles-dark {
