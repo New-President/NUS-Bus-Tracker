@@ -86,7 +86,15 @@ function dashboard() {
         setPopupContent(value) { this.popup = value; return this; },
         on(event, handler) { this._events = this._events || {}; this._events[event] = handler; return this; },
         isPopupOpen() { return this._popupOpen || false; },
-        openPopup() { this._popupOpen = true; if (this._events?.popupopen) this._events.popupopen(); return this; }
+        openPopup() { this._popupOpen = true; if (this._events?.popupopen) this._events.popupopen(); return this; },
+        getLatLng() {
+          return Array.isArray(this.location)
+            ? { lat: this.location[0], lng: this.location[1] }
+            : (this.location || { lat: 0, lng: 0 });
+        },
+        getElement() {
+          return { classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } } };
+        }
       };
       return marker;
     },
@@ -119,6 +127,7 @@ function dashboard() {
         center: null, zoom: null,
         setView(c, z) { this.center = c; this.zoom = z; return this; },
         fitBounds(b, opts) { this.bounds = b; this.fitBoundsOpts = opts; return this; },
+        panTo(c, opts) { this.center = c; this.panToOpts = opts; return this; },
         removeLayer(l) {
           if (Array.isArray(l?.layers)) {
             for (const child of [...l.layers]) this.removeLayer(child);
@@ -203,7 +212,8 @@ function dashboard() {
   vm.runInContext(app + `\n;globalThis.dashboard = {
     STATE, renderTimelineChart, renderHourlyBarChart, renderSummaryCards, renderCountdown,
     renderFleetGrid, renderMapBuses, renderRouteFilters, renderStatus,
-    initLeafletMap, renderBusStopsOnMap, renderRouteTraceOnMap,
+    initLeafletMap, renderBusStopsOnMap, renderRouteTraceOnMap, animateBusMarker, getAnimationWaypoints, getUpstreamRoutePoint,
+    projectPointToSegment, snapToRoute,
     formatLocalDate, formatTime, setupActionButtons, setupFilters, setupTabs,
     setupChartInteractivity, fetchHistory24h,
     openVehicleDashboard, closeVehicleDashboard, renderVehicleDetailMap,
@@ -677,6 +687,87 @@ test('switching map route filter back to all traces all routes across campus and
   assert.equal(nonStandardStops.length, 0);
 });
 
+test('animates bus marker position smoothly when vehicle coordinates update on refresh', () => {
+  const ui = dashboard();
+  const bus1 = bus({ vehplate: 'PD788A', route_code: 'A1', lat: 1.29391, lng: 103.77014 });
+  reportedFleet(ui, [bus1]);
+  ui.initLeafletMap();
+  ui.renderMapBuses();
+
+  const marker = ui.STATE.busMarkers.get('PD788A');
+  assert.ok(marker, 'Bus marker exists');
+  assert.equal(marker.location[0], 1.29391);
+  assert.equal(marker.location[1], 103.77014);
+
+  // Simulate next 1-min telemetry refresh with updated GPS coordinates
+  const bus1Moved = bus({ vehplate: 'PD788A', route_code: 'A1', lat: 1.29520, lng: 103.77160 });
+  reportedFleet(ui, [bus1Moved]);
+  ui.renderMapBuses();
+
+  // Marker has moved smoothly to road-snapped target coordinates
+  const snappedTarget = ui.snapToRoute(1.29520, 103.77160, 'A1');
+  assert.equal(marker.location[0], snappedTarget.lat);
+  assert.equal(marker.location[1], snappedTarget.lng);
+});
+
+test('animateBusMarker handles stationary buses, GPS teleport jumps, and route alignment', () => {
+  const ui = dashboard();
+  const testMarker = ui.sandbox.L.marker([1.2965, 103.7725]);
+
+  // Stationary bus: delta < 2.5 meters
+  ui.animateBusMarker(testMarker, 1.2965001, 103.7725001, 'A1');
+  assert.equal(testMarker.location[0], 1.2965001);
+
+  // Excessive jump: delta > 1500 meters
+  ui.animateBusMarker(testMarker, 1.3500, 103.8000, 'A1');
+  assert.equal(testMarker.location[0], 1.3500);
+
+  // Route-following waypoints lookup
+  const waypoints = ui.getAnimationWaypoints(1.2965, 103.7725, 1.2980, 103.7740, 'A1');
+  assert.ok(Array.isArray(waypoints));
+  assert.ok(waypoints.length >= 2);
+  assert.equal(waypoints[0].lat, 1.2965);
+  assert.equal(waypoints[waypoints.length - 1].lat, 1.2980);
+});
+
+test('snapToRoute accurately snaps drifted GPS coordinates to route line and handles edge cases', () => {
+  const ui = dashboard();
+
+  // Invalid coordinates return original input with snapped: false
+  const nullRes = ui.snapToRoute(null, null, 'A1');
+  assert.equal(nullRes.lat, null);
+  assert.equal(nullRes.lng, null);
+  assert.equal(nullRes.snapped, false);
+
+  const unknownRes = ui.snapToRoute(1.2965, 103.7725, 'NONEXISTENT_ROUTE');
+  assert.equal(unknownRes.lat, 1.2965);
+  assert.equal(unknownRes.lng, 103.7725);
+  assert.equal(unknownRes.snapped, false);
+
+  // Out-of-bounds coordinates (> 150m from route) are not snapped
+  const farResult = ui.snapToRoute(1.3500, 103.8000, 'A1');
+  assert.equal(farResult.snapped, false);
+  assert.equal(farResult.lat, 1.3500);
+  assert.equal(farResult.lng, 103.8000);
+
+  // Kent Ridge Bus Terminal bay parked bus snaps to A1 route polyline
+  const krbResult = ui.snapToRoute(1.294238, 103.769512, 'A1');
+  assert.equal(krbResult.snapped, true);
+  assert.ok(krbResult.dist < 5.0, `Expected distance < 5m, got ${krbResult.dist}`);
+  assert.ok(Math.abs(krbResult.lat - 1.29424) < 0.0001);
+
+  // Kent Ridge MRT drifted bus snaps cleanly to South Buona Vista road corridor
+  const mrtResult = ui.snapToRoute(1.29486, 103.78438, 'A1');
+  assert.equal(mrtResult.snapped, true);
+  assert.ok(mrtResult.dist < 10.0, `Expected distance < 10m, got ${mrtResult.dist}`);
+
+  // Test projectPointToSegment perpendicular projection
+  const proj = ui.projectPointToSegment(1.0, 0.5, 0.0, 0.0, 2.0, 0.0);
+  assert.equal(proj.lat, 1.0);
+  assert.equal(proj.lng, 0.0);
+  assert.equal(proj.t, 0.5);
+});
+
 test('openVehicleDashboard populates telemetry details, route badge, and displays modal', () => {
   const ui = dashboard();
   const testBus = bus({
@@ -729,6 +820,66 @@ test('openVehicleDashboard initializes vehicle map and traces route path with pu
   assert.ok(ui.polylines.length >= 2, 'Route polyline drawn (glow + main line)');
   assert.match(ui.STATE.vehicleMarker.icon.html, /PD964H/);
   assert.match(ui.STATE.vehicleMarker.icon.className, /bus-marker-detail-pulsing/);
+});
+
+test('animates bus marker across all map instances including route filter, individual bus filter, and modal map', () => {
+  const ui = dashboard();
+  const busA1 = bus({ vehplate: 'PD788A', route_code: 'A1', lat: 1.29391, lng: 103.77014 });
+  const busA2 = bus({ vehplate: 'PC4112S', route_code: 'A2', lat: 1.29800, lng: 103.77400 });
+  reportedFleet(ui, [busA1, busA2]);
+  ui.initLeafletMap();
+  ui.renderMapBuses();
+
+  const markerA1 = ui.STATE.busMarkers.get('PD788A');
+  const markerA2 = ui.STATE.busMarkers.get('PC4112S');
+  assert.ok(markerA1 && markerA2);
+
+  // Filter to route A1: A2 is removed from leafletMap but preserved in STATE.busMarkers
+  ui.STATE.mapRouteFilter = 'A1';
+  ui.renderMapBuses();
+  assert.equal(ui.STATE.busMarkers.has('PC4112S'), true, 'Marker retained in cache');
+
+  // Filter to individual vehicle PD788A
+  ui.STATE.mapBusFilter = 'PD788A';
+  ui.renderMapBuses();
+
+  // Telemetry updates for PD788A
+  const busA1Moved = bus({ vehplate: 'PD788A', route_code: 'A1', lat: 1.29520, lng: 103.77160 });
+  reportedFleet(ui, [busA1Moved, busA2]);
+  ui.renderMapBuses();
+  const snappedA1 = ui.snapToRoute(1.29520, 103.77160, 'A1');
+  assert.equal(markerA1.location[0], snappedA1.lat);
+  assert.equal(markerA1.location[1], snappedA1.lng);
+
+  // Switch filter back to all: PC4112S marker still present and animates on update
+  ui.STATE.mapRouteFilter = 'all';
+  ui.STATE.mapBusFilter = 'all';
+  const busA2Moved = bus({ vehplate: 'PC4112S', route_code: 'A2', lat: 1.29900, lng: 103.77500 });
+  reportedFleet(ui, [busA1Moved, busA2Moved]);
+  ui.renderMapBuses();
+  const snappedA2 = ui.snapToRoute(1.29900, 103.77500, 'A2');
+  assert.equal(markerA2.location[0], snappedA2.lat);
+  assert.equal(markerA2.location[1], snappedA2.lng);
+
+  // Modal map: open vehicle dashboard for PD788A and update telemetry
+  ui.openVehicleDashboard('PD788A');
+  assert.ok(ui.STATE.vehicleMarker);
+  assert.equal(ui.STATE.vehicleMarker.location[0], snappedA1.lat);
+
+  const busA1MovedAgain = bus({ vehplate: 'PD788A', route_code: 'A1', lat: 1.29600, lng: 103.77200 });
+  reportedFleet(ui, [busA1MovedAgain, busA2Moved]);
+  ui.renderVehicleDetailMap(busA1MovedAgain);
+  assert.equal(ui.STATE.vehicleDetailMap.panToOpts.duration, 5);
+
+  // Upstream route point sampling along polyline
+  const upstreamPt = ui.getUpstreamRoutePoint(1.29391, 103.77014, 'A1', 50);
+  assert.ok(upstreamPt, 'Upstream point along A1 polyline exists');
+  assert.ok(Number.isFinite(upstreamPt.lat) && Number.isFinite(upstreamPt.lng));
+
+  // Filter selection animation triggers smoothly
+  ui.STATE.mapRouteFilter = 'A1';
+  ui.renderMapBuses(true);
+  assert.ok(markerA1);
 });
 
 test('openVehicleDashboard renders 24-hour crowd analytics chart with peak and avg stats', () => {

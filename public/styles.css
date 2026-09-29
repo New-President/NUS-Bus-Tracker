@@ -2252,6 +2252,19 @@ canvas {
 }
 
 /* Map Custom Bus Marker */
+.leaflet-marker-icon.bus-custom-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+.leaflet-marker-icon.bus-in-motion {
+  z-index: 1000 !important;
+}
+
+.leaflet-marker-icon.bus-in-motion .bus-marker-node {
+  filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.75));
+}
+
 .bus-marker-node {
   display: flex;
   flex-direction: column;
