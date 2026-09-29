@@ -528,3 +528,41 @@ test('optimizations: getSettings batches queries, foreign key index exists, and 
   assert.equal(status.dataProvider, 'community');
   assert.deepEqual(status.monitoredStops, ['UTOWN']);
 });
+
+test('Singapore timezone helper functions target Asia/Singapore and execute on existing database adoption', async t => {
+  const executedSql = [];
+  const fakeClient = {
+    closed: false,
+    async execute(query) {
+      const sql = typeof query === 'string' ? query : query.sql;
+      executedSql.push(sql);
+      if (sql.includes('information_schema.columns')) {
+        const rows = [
+          ...['key', 'value'].map(col => ({ table_name: 'settings', column_name: col })),
+          ...['id', 'timestamp', 'records_count', 'source_provider', 'data_coverage', 'monitored_stops'].map(col => ({ table_name: 'poll_batches', column_name: col })),
+          ...['id', 'poll_batch_id', 'timestamp', 'time_iso', 'time_str', 'route_code', 'vehplate',
+            'lat', 'lng', 'speed', 'capacity', 'crowd_level', 'occupancy', 'ridership'].map(col => ({ table_name: 'snapshots', column_name: col })),
+          ...['id', 'version'].map(col => ({ table_name: 'bus_schema_version', column_name: col }))
+        ];
+        return { rows };
+      }
+      if (sql.includes('SELECT id, version FROM bus_schema_version')) {
+        return { rows: [{ id: 1, version: 4 }] };
+      }
+      return { rows: [], rowsAffected: 0 };
+    },
+    async batch() { return []; },
+    close() { this.closed = true; }
+  };
+
+  const db = new RemoteBusDatabase({ client: fakeClient });
+  t.after(() => db.close());
+  await db.ready();
+
+  const helperSql = executedSql.filter(sql => sql.includes('CREATE OR REPLACE FUNCTION'));
+  assert.equal(helperSql.length, 4, 'Should execute all four helper function definitions on existing schema');
+  assert.ok(helperSql.some(sql => sql.includes('sg_hour') && sql.includes("AT TIME ZONE 'Asia/Singapore'")));
+  assert.ok(helperSql.some(sql => sql.includes('sg_date') && sql.includes("AT TIME ZONE 'Asia/Singapore'")));
+  assert.ok(helperSql.some(sql => sql.includes('sg_time_str') && sql.includes("AT TIME ZONE 'Asia/Singapore'")));
+  assert.ok(helperSql.every(sql => !sql.includes("'+8'")), 'Must never use POSIX +8 offset which inverts to UTC-8 in PostgreSQL');
+});

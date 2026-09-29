@@ -149,6 +149,30 @@ export class RemoteBusDatabase {
     await this.initialization;
   }
 
+  async ensureHelperFunctions() {
+    const fns = [
+      `CREATE OR REPLACE FUNCTION sg_time_str(ts BIGINT) RETURNS TEXT AS $$
+        SELECT to_char(to_timestamp(ts / 1000.0) AT TIME ZONE 'Asia/Singapore', 'HH24:MI');
+      $$ LANGUAGE SQL IMMUTABLE;`,
+      `CREATE OR REPLACE FUNCTION sg_time_iso(ts BIGINT) RETURNS TEXT AS $$
+        SELECT to_char(to_timestamp(ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+      $$ LANGUAGE SQL IMMUTABLE;`,
+      `CREATE OR REPLACE FUNCTION sg_date(ts BIGINT) RETURNS TEXT AS $$
+        SELECT to_char(to_timestamp(ts / 1000.0) AT TIME ZONE 'Asia/Singapore', 'YYYY-MM-DD');
+      $$ LANGUAGE SQL IMMUTABLE;`,
+      `CREATE OR REPLACE FUNCTION sg_hour(ts BIGINT) RETURNS INTEGER AS $$
+        SELECT CAST(to_char(to_timestamp(ts / 1000.0) AT TIME ZONE 'Asia/Singapore', 'HH24') AS INTEGER);
+      $$ LANGUAGE SQL IMMUTABLE;`
+    ];
+    for (const sql of fns) {
+      try {
+        await this.client.execute({ sql, args: [] });
+      } catch {
+        // Functions may already exist or environment may not permit CREATE FUNCTION
+      }
+    }
+  }
+
   async initSchema() {
     const tables = Object.keys(REQUIRED_COLUMNS);
     const columnQuery = await this.client.execute({
@@ -193,38 +217,11 @@ export class RemoteBusDatabase {
           throw new Error(`Unsupported remote database schema for ${table}`);
         }
       }
+      await this.ensureHelperFunctions();
       return;
     }
 
-    // Define helper date/time functions in PostgreSQL if supported
-    try {
-      await this.client.execute({
-        sql: `CREATE OR REPLACE FUNCTION sg_time_str(ts BIGINT) RETURNS TEXT AS $$
-          SELECT to_char(to_timestamp(ts / 1000.0) AT TIME ZONE '+8', 'HH24:MI');
-        $$ LANGUAGE SQL IMMUTABLE;`,
-        args: []
-      });
-      await this.client.execute({
-        sql: `CREATE OR REPLACE FUNCTION sg_time_iso(ts BIGINT) RETURNS TEXT AS $$
-          SELECT to_char(to_timestamp(ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
-        $$ LANGUAGE SQL IMMUTABLE;`,
-        args: []
-      });
-      await this.client.execute({
-        sql: `CREATE OR REPLACE FUNCTION sg_date(ts BIGINT) RETURNS TEXT AS $$
-          SELECT to_char(to_timestamp(ts / 1000.0) AT TIME ZONE '+8', 'YYYY-MM-DD');
-        $$ LANGUAGE SQL IMMUTABLE;`,
-        args: []
-      });
-      await this.client.execute({
-        sql: `CREATE OR REPLACE FUNCTION sg_hour(ts BIGINT) RETURNS INTEGER AS $$
-          SELECT CAST(to_char(to_timestamp(ts / 1000.0) AT TIME ZONE '+8', 'HH24') AS INTEGER);
-        $$ LANGUAGE SQL IMMUTABLE;`,
-        args: []
-      });
-    } catch {
-      // Functions may already exist or environment may not permit CREATE FUNCTION
-    }
+    await this.ensureHelperFunctions();
 
     await this.client.batch([
       VERSION_SCHEMA, SETTINGS_SCHEMA,
