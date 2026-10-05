@@ -243,27 +243,44 @@ body {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
 .brand-logo {
-  display: flex;
+  display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
   border-radius: var(--radius-sm);
   overflow: hidden;
   font-weight: 800;
   font-size: 16px;
   letter-spacing: 0.5px;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .logo-nus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background-color: var(--nus-blue);
   color: #ffffff;
   padding: 6px 10px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .logo-shuttle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background-color: var(--nus-orange);
   color: #ffffff;
   padding: 6px 10px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .brand-text h1 {
@@ -1327,9 +1344,16 @@ canvas {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
   }
   .brand-logo {
     font-size: 13px;
+    flex-shrink: 0;
+  }
+  .logo-nus,
+  .logo-shuttle {
+    padding: 5px 8px;
+    flex-shrink: 0;
   }
   .brand-text h1 {
     font-size: 16px;
@@ -1539,18 +1563,31 @@ canvas {
     border-radius: 10px;
   }
   .leaflet-map-frame {
-    height: 52vh !important;
-    min-height: 320px;
-    max-height: 480px;
+    height: 56vh !important;
+    min-height: 350px;
+    max-height: 520px;
   }
   .map-floating-legend {
-    bottom: 8px;
-    right: 8px;
-    left: auto;
-    max-width: calc(100% - 16px);
-    padding: 8px 10px;
-    font-size: 11px;
-    gap: 4px;
+    bottom: 8px !important;
+    right: 8px !important;
+    left: auto !important;
+    max-width: calc(100% - 16px) !important;
+    padding: 6px 9px !important;
+    font-size: 10.5px !important;
+    gap: 3px !important;
+    z-index: 400 !important;
+  }
+  .map-popup-card {
+    padding: 9px 11px;
+    width: 250px;
+    max-width: calc(100vw - 28px);
+    min-width: 160px;
+  }
+  .map-popup-card.stop-popup {
+    width: min(270px, calc(100vw - 28px));
+  }
+  .stop-popup-buses {
+    max-height: 130px;
   }
 
   /* Fleet Grid */
@@ -2015,15 +2052,30 @@ canvas {
     white-space: nowrap;
   }
   .leaflet-map-frame {
-    height: 48vh !important;
-    min-height: 290px;
+    height: 54vh !important;
+    min-height: 330px;
+    max-height: 490px;
   }
   .map-floating-legend {
-    font-size: 10px;
-    padding: 6px 8px;
-    bottom: 6px;
-    right: 6px;
-    max-width: calc(100% - 12px);
+    font-size: 10px !important;
+    padding: 5px 7px !important;
+    bottom: 6px !important;
+    right: 6px !important;
+    left: auto !important;
+    max-width: calc(100% - 12px) !important;
+    z-index: 400 !important;
+  }
+  .map-popup-card {
+    padding: 8px 10px;
+    width: 240px;
+    max-width: calc(100vw - 20px);
+    min-width: 150px;
+  }
+  .map-popup-card.stop-popup {
+    width: min(250px, calc(100vw - 20px));
+  }
+  .stop-popup-buses {
+    max-height: 110px;
   }
   .timeline-nav-toolbar {
     gap: 8px;
@@ -2433,14 +2485,14 @@ canvas {
 /* Map Floating Legend */
 .map-floating-legend {
   position: absolute;
-  bottom: 20px;
-  left: 20px;
+  bottom: 16px;
+  left: 16px;
   background: rgba(15, 23, 42, 0.88);
   backdrop-filter: blur(8px);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  padding: 10px 14px;
-  z-index: 500;
+  padding: 8px 12px;
+  z-index: 400;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
   pointer-events: none;
 }
@@ -2489,6 +2541,8 @@ canvas {
   border-radius: 10px !important;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6) !important;
   padding: 0 !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
 }
 
 .leaflet-popup-tip {
@@ -2497,7 +2551,10 @@ canvas {
 
 .leaflet-container a.leaflet-popup-close-button {
   color: #94a3b8 !important;
-  padding: 8px 8px 0 0 !important;
+  padding: 6px 8px 0 0 !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
+  z-index: 20;
 }
 
 .leaflet-container a.leaflet-popup-close-button:hover {
@@ -2507,11 +2564,21 @@ canvas {
 .leaflet-popup-content {
   margin: 0 !important;
   line-height: 1.4 !important;
+  max-height: min(280px, 50vh) !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+  box-sizing: border-box !important;
 }
 
 .map-popup-card {
-  padding: 14px 16px;
-  min-width: 220px;
+  padding: 11px 13px;
+  width: 260px;
+  max-width: calc(100vw - 32px);
+  min-width: 180px;
+  box-sizing: border-box;
 }
 
 .map-popup-header {
@@ -2520,22 +2587,23 @@ canvas {
   justify-content: space-between;
   gap: 8px;
   border-bottom: 1px solid #273553;
-  padding-bottom: 8px;
-  margin-bottom: 10px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  padding-right: 20px;
 }
 
 .map-popup-route {
-  padding: 2px 8px;
-  border-radius: 6px;
+  padding: 2px 7px;
+  border-radius: 5px;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 11.5px;
   color: #ffffff;
 }
 
 .map-popup-plate {
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 12.5px;
   color: #f8fafc;
 }
 
@@ -2543,11 +2611,11 @@ canvas {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
 }
 
 .map-popup-pax-val {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 700;
   color: #ffffff;
 }
@@ -2555,16 +2623,16 @@ canvas {
 .map-popup-occ-pct {
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .map-popup-progress {
   width: 100%;
-  height: 6px;
+  height: 5px;
   background-color: #273553;
   border-radius: 3px;
   overflow: hidden;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .map-popup-progress-fill {
@@ -2575,13 +2643,13 @@ canvas {
 .map-popup-meta {
   display: flex;
   justify-content: space-between;
-  font-size: 11px;
+  font-size: 10.5px;
   color: #94a3b8;
 }
 
 .map-popup-action {
-  margin-top: 10px;
-  padding-top: 8px;
+  margin-top: 8px;
+  padding-top: 6px;
   border-top: 1px solid #273553;
   text-align: right;
 }
@@ -3357,11 +3425,20 @@ canvas {
   border-radius: 12px !important;
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.65) !important;
   padding: 0 !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
 }
 
 .leaflet-popup-content {
-  margin: 12px 14px !important;
+  margin: 0 !important;
   line-height: 1.4 !important;
+  max-height: min(280px, 50vh) !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+  box-sizing: border-box !important;
 }
 
 .leaflet-popup-tip {
@@ -3376,6 +3453,7 @@ canvas {
   font-size: 18px !important;
   font-weight: 700 !important;
   text-decoration: none !important;
+  z-index: 20;
 }
 
 .leaflet-container a.leaflet-popup-close-button:hover {
@@ -3384,42 +3462,42 @@ canvas {
 
 /* Map Bus Stop Popups */
 .map-popup-card.stop-popup {
-  width: 320px;
-  min-width: 290px;
-  max-width: 360px;
+  width: 280px;
+  max-width: calc(100vw - 32px);
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   box-sizing: border-box;
 }
 
 .stop-popup-header {
   border-bottom: 1px solid #1e293b;
-  padding-bottom: 8px;
+  padding-bottom: 6px;
   padding-right: 22px;
 }
 
 .stop-popup-title {
-  font-size: 0.96rem;
+  font-size: 0.92rem;
   font-weight: 700;
   color: #f8fafc;
-  margin: 0 0 6px 0;
+  margin: 0 0 5px 0;
   letter-spacing: -0.01em;
 }
 
 .stop-popup-routes {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
 }
 
 .stop-popup-route-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 1px 7px;
-  border-radius: 10px;
-  font-size: 0.72rem;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 0.7rem;
   font-weight: 700;
   color: #ffffff;
 }
@@ -3427,11 +3505,11 @@ canvas {
 .stop-popup-buses {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 290px;
+  gap: 6px;
+  max-height: min(180px, 35vh);
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 4px;
+  padding-right: 3px;
   scrollbar-width: thin;
   scrollbar-color: #334155 transparent;
 }
@@ -4306,12 +4384,12 @@ canvas {
 }
 
 [data-theme="light"] .brand-logo .logo-nus {
-  background: var(--nus-orange);
+  background: var(--nus-blue);
   color: #ffffff;
 }
 
 [data-theme="light"] .brand-logo .logo-shuttle {
-  background: var(--nus-blue);
+  background: var(--nus-orange);
   color: #ffffff;
 }
 

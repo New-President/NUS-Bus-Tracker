@@ -3469,6 +3469,16 @@ function renderVehicleStopProgression(bus) {
   }).join('');
 }
 
+const MAP_POPUP_OPTIONS = {
+  maxWidth: 300,
+  minWidth: 180,
+  maxHeight: 260,
+  autoPan: true,
+  autoPanPadding: [12, 12],
+  keepInView: true,
+  closeButton: true
+};
+
 function initLeafletMap() {
   if (typeof L === 'undefined') { setText('mapDataMessage', 'Map library unavailable. Fleet readings remain available in the Fleet tab.'); return; }
   STATE.leafletMap = L.map('leafletMap', {
@@ -3514,7 +3524,7 @@ function renderBusStopsOnMap() {
     marker.stopCode = stop.code;
     marker.stopName = stop.name;
 
-    marker.bindPopup(renderStopPopupHtml(stop));
+    marker.bindPopup(renderStopPopupHtml(stop), MAP_POPUP_OPTIONS);
     marker.on?.('popupopen', async () => {
       if (stop.code) {
         const etas = await fetchStopEtas(stop.code);
@@ -4054,7 +4064,7 @@ function renderMapBuses(forceAnimate = false) {
         }
       }
 
-      marker = L.marker([initialLat, initialLng], { icon }).addTo(STATE.leafletMap).bindPopup(popup);
+      marker = L.marker([initialLat, initialLng], { icon }).addTo(STATE.leafletMap).bindPopup(popup, MAP_POPUP_OPTIONS);
       marker._plate = bus.vehplate;
       marker._animLatLng = [initialLat, initialLng];
       marker._isOnMap = true;
@@ -4340,9 +4350,9 @@ function renderVehicleDetailMap(bus) {
             </div>
           </div>
         </div>
-      `);
+      `, MAP_POPUP_OPTIONS);
     } else {
-      marker.bindPopup?.(`<div class="map-popup-card"><strong>${escapeHtml(stop.name)}</strong><p class="map-popup-sub">${isServiced ? `Serviced by Service ${escapeHtml(routeCode)}` : 'Not on this service route'}</p></div>`);
+      marker.bindPopup?.(`<div class="map-popup-card"><strong>${escapeHtml(stop.name)}</strong><p class="map-popup-sub">${isServiced ? `Serviced by Service ${escapeHtml(routeCode)}` : 'Not on this service route'}</p></div>`, MAP_POPUP_OPTIONS);
     }
     layers.push(marker);
   }
@@ -4387,7 +4397,7 @@ function renderVehicleDetailMap(bus) {
         .addTo(STATE.vehicleDetailMap);
       STATE.vehicleMarker._plate = bus.vehplate;
       STATE.vehicleMarker._animLatLng = [initialLat, initialLng];
-      STATE.vehicleMarker.bindPopup?.(popupHtml);
+      STATE.vehicleMarker.bindPopup?.(popupHtml, MAP_POPUP_OPTIONS);
 
       if (shouldAnimate) {
         STATE.vehicleDetailMap.setView([initialLat, initialLng], 16);
