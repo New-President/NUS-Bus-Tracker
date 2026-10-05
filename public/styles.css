@@ -3243,7 +3243,7 @@ canvas {
   flex-direction: column;
   gap: 4px;
   background: #0c1222;
-  border: 1px solid #273553;
+  border: 2px solid #273553;
   border-radius: 6px;
   padding: 6px 9px;
   transition: all 0.15s ease;
@@ -3259,14 +3259,34 @@ canvas {
 
 .stop-progression-card.is-at-stop {
   border-color: #10b981;
-  background: rgba(16, 185, 129, 0.08);
-  box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+  background: rgba(16, 185, 129, 0.12);
+  box-shadow: 0 0 0 1px #10b981, 0 3px 12px rgba(16, 185, 129, 0.25);
+}
+
+.stop-progression-card.is-at-stop:hover {
+  border-color: #34d399;
+  background: rgba(16, 185, 129, 0.16);
+}
+
+.stop-progression-card.is-at-stop .stop-seq-badge {
+  background: #10b981;
+  color: #ffffff;
 }
 
 .stop-progression-card.is-approaching {
   border-color: #38bdf8;
-  background: rgba(56, 189, 248, 0.08);
-  box-shadow: 0 0 12px rgba(56, 189, 248, 0.15);
+  background: rgba(56, 189, 248, 0.12);
+  box-shadow: 0 0 0 1px #38bdf8, 0 3px 12px rgba(56, 189, 248, 0.25);
+}
+
+.stop-progression-card.is-approaching:hover {
+  border-color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.16);
+}
+
+.stop-progression-card.is-approaching .stop-seq-badge {
+  background: #0284c7;
+  color: #ffffff;
 }
 
 .stop-card-header {
@@ -5388,6 +5408,50 @@ canvas {
 [data-theme="light"] .stop-progression-card:hover {
   border-color: var(--nus-blue);
   background: #e8eff7;
+}
+
+[data-theme="light"] .stop-progression-card.is-at-stop {
+  border-color: #059669;
+  background: #ecfdf5;
+  box-shadow: 0 0 0 1px #059669, 0 3px 12px rgba(5, 150, 105, 0.25);
+}
+
+[data-theme="light"] .stop-progression-card.is-at-stop:hover {
+  border-color: #047857;
+  background: #d1fae5;
+}
+
+[data-theme="light"] .stop-progression-card.is-at-stop .stop-seq-badge {
+  background: #059669;
+  color: #ffffff;
+}
+
+[data-theme="light"] .stop-progression-card.is-approaching {
+  border-color: #0284c7;
+  background: #f0f9ff;
+  box-shadow: 0 0 0 1px #0284c7, 0 3px 12px rgba(2, 132, 199, 0.25);
+}
+
+[data-theme="light"] .stop-progression-card.is-approaching:hover {
+  border-color: #0369a1;
+  background: #e0f2fe;
+}
+
+[data-theme="light"] .stop-progression-card.is-approaching .stop-seq-badge {
+  background: #0284c7;
+  color: #ffffff;
+}
+
+[data-theme="light"] .stop-card-status-badge.status-at-stop {
+  background: #d1fae5;
+  color: #065f46;
+  border-color: #6ee7b7;
+}
+
+[data-theme="light"] .stop-card-status-badge.status-approaching {
+  background: #e0f2fe;
+  color: #0369a1;
+  border-color: #7dd3fc;
 }
 
 [data-theme="light"] .stop-seq-badge {

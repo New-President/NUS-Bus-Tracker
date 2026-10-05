@@ -168,7 +168,7 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
       if (pathname === '/api/status') {
         const cached = getCached('status');
         if (cached) {
-          return sendJson(res, 200, cached, 'public, max-age=0, s-maxage=2, must-revalidate');
+          return sendJson(res, 200, cached, 'public, max-age=0, s-maxage=5, stale-while-revalidate=10');
         }
         const [status, fleet, availableDates, cronJob] = await Promise.all([
           collector.getStatus(), db.getAllFleetStatus(), db.getAvailableDates(),
@@ -183,13 +183,13 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
           cronJob: cronJob || null,
           nextPollAt,
           nextPollInSec };
-        setCached('status', responseData, 2000);
-        return sendJson(res, 200, responseData, 'public, max-age=0, s-maxage=2, must-revalidate');
+        setCached('status', responseData, 5000);
+        return sendJson(res, 200, responseData, 'public, max-age=0, s-maxage=5, stale-while-revalidate=10');
       }
       if (pathname === '/api/live') {
         const cached = getCached('live');
         if (cached) {
-          return sendJson(res, 200, cached, 'public, max-age=0, s-maxage=2, must-revalidate');
+          return sendJson(res, 200, cached, 'public, max-age=0, s-maxage=5, stale-while-revalidate=10');
         }
         const latestPollPromise = db.getLatestPoll();
         const [buses, allFleet, latestPoll, status] = await Promise.all([
@@ -202,8 +202,8 @@ export function createRequestHandler({ db, collector, env = process.env } = {}) 
           inactiveCount: allFleet.filter(bus => bus.status === 'inactive').length,
           staleCount: allFleet.filter(bus => bus.status === 'stale').length,
           knownFleetCount: allFleet.length, routes: NUS_ROUTES };
-        setCached('live', responseData, 2000);
-        return sendJson(res, 200, responseData, 'public, max-age=0, s-maxage=2, must-revalidate');
+        setCached('live', responseData, 5000);
+        return sendJson(res, 200, responseData, 'public, max-age=0, s-maxage=5, stale-while-revalidate=10');
       }
       if (pathname === '/api/history/24h') {
         const cacheKey = 'history:' + url.search;

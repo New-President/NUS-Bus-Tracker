@@ -331,8 +331,8 @@ export class RemoteBusDatabase {
       { sql: `SELECT DISTINCT ON (s.vehplate)
           s.*, p.source_provider, p.data_coverage, p.monitored_stops
         FROM snapshots s JOIN poll_batches p ON p.id = s.poll_batch_id
-        WHERE s.timestamp <= ? AND p.timestamp <= ?
-        ORDER BY s.vehplate, s.timestamp DESC, s.poll_batch_id DESC, s.id DESC`, args: [nowMs, nowMs] }
+        WHERE s.timestamp >= ? AND s.timestamp <= ? AND p.timestamp <= ?
+        ORDER BY s.vehplate, s.timestamp DESC, s.poll_batch_id DESC, s.id DESC`, args: [nowMs - 30 * DAY_MS, nowMs, nowMs] }
     ]);
     const latestBatch = results[0].rows[0];
     const fresh = latestBatch && latestBatch.timestamp >= nowMs - ACTIVE_WINDOW_MS;

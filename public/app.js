@@ -377,6 +377,19 @@ async function fetchHistory24h() {
     const data = await requestJson(url);
     if (requestId !== STATE.historyRequest || selection !== `${STATE.timeMode}:${STATE.selectedDate}`) return;
     STATE.history24h = data;
+    const byPlate = new Map();
+    if (Array.isArray(data.vehicleData)) {
+      for (const row of data.vehicleData) {
+        if (!row || !row.vehplate) continue;
+        let list = byPlate.get(row.vehplate);
+        if (!list) {
+          list = [];
+          byPlate.set(row.vehplate, list);
+        }
+        list.push(row);
+      }
+    }
+    STATE.vehicleDataByPlate = byPlate;
     delete STATE.errors.history;
     if (Array.isArray(data.availableDates)) STATE.availableDates = data.availableDates;
     STATE.lastFetched ||= {};
@@ -426,14 +439,23 @@ async function refreshAllData({ forceAll = false } = {}) {
         STATE.live = data;
         if (!STATE.previousBusPositions) STATE.previousBusPositions = new Map();
         if (Array.isArray(STATE.liveBuses)) {
+          const isMapActive = STATE.currentTab === 'tab-map' || Boolean(STATE.selectedVehiclePlate);
           for (const b of STATE.liveBuses) {
             if (b && b.vehplate && hasCoordinates(b)) {
-              const pos = snapToRoute(b.lat, b.lng, b.route_code);
-              STATE.previousBusPositions.set(b.vehplate, {
-                lat: pos.lat,
-                lng: pos.lng,
-                timestamp: b.timestamp || Date.now()
-              });
+              if (isMapActive) {
+                const pos = snapToRoute(b.lat, b.lng, b.route_code);
+                STATE.previousBusPositions.set(b.vehplate, {
+                  lat: pos.lat,
+                  lng: pos.lng,
+                  timestamp: b.timestamp || Date.now()
+                });
+              } else {
+                STATE.previousBusPositions.set(b.vehplate, {
+                  lat: b.lat,
+                  lng: b.lng,
+                  timestamp: b.timestamp || Date.now()
+                });
+              }
             }
           }
         }
@@ -480,9 +502,25 @@ async function refreshAllData({ forceAll = false } = {}) {
 }
 
 function renderAll() {
-  renderRouteFilters(); updateAvailableDatesDropdown(); renderStatus(); renderSummaryCards();
-  renderTimelineChart(); renderOptimizerView(); renderFleetGrid(); updateMapBusSelectDropdown();
-  updateMapStopSelectDropdown(); updateTimelineVehicleDropdown(); renderMapBuses();
+  renderRouteFilters();
+  updateAvailableDatesDropdown();
+  renderStatus();
+  renderSummaryCards();
+
+  const tab = STATE.currentTab || 'tab-24h';
+  if (tab === 'tab-24h') {
+    renderTimelineChart();
+    updateTimelineVehicleDropdown();
+  } else if (tab === 'tab-map') {
+    updateMapBusSelectDropdown();
+    updateMapStopSelectDropdown();
+    renderMapBuses();
+  } else if (tab === 'tab-optimizer') {
+    renderOptimizerView();
+  } else if (tab === 'tab-fleet') {
+    renderFleetGrid();
+  }
+
   if (STATE.selectedVehiclePlate && $('vehicleDashboardModal') && !$('vehicleDashboardModal').hidden) {
     openVehicleDashboard(STATE.selectedVehiclePlate);
   }
@@ -2868,9 +2906,8 @@ function getVehicleDutySummary(plate, targetDateStr = null) {
     };
   }
 
-  const allVehicleRows = STATE.history24h?.vehicleData || [];
-  const rows = allVehicleRows.filter(r => {
-    if (r.vehplate !== plate) return false;
+  const plateRows = STATE.vehicleDataByPlate?.get(plate) || (STATE.history24h?.vehicleData?.filter(r => r.vehplate === plate) || []);
+  const rows = plateRows.filter(r => {
     const ts = typeof r.bucket_ts === 'number' ? r.bucket_ts : 0;
     return ts >= startMs && ts < endMs;
   });
@@ -5027,14 +5064,24 @@ function setupTabs() {
     STATE.currentTab = button.dataset.tab;
     tabs.forEach(tab => { tab.classList.toggle('active', tab === button); tab.setAttribute('aria-selected', String(tab === button)); tab.tabIndex = tab === button ? 0 : -1; });
     document.querySelectorAll('.tab-content').forEach(panel => panel.classList.toggle('active', panel.id === STATE.currentTab));
-    if (STATE.currentTab === 'tab-map') { initMapIfNeeded(); STATE.leafletMap?.invalidateSize(); renderMapBuses(); }
+    if (STATE.currentTab === 'tab-map') {
+      initMapIfNeeded();
+      STATE.leafletMap?.invalidateSize();
+      updateMapBusSelectDropdown();
+      updateMapStopSelectDropdown();
+      renderMapBuses();
+    }
     if (STATE.currentTab === 'tab-24h') {
       renderTimelineChart();
+      updateTimelineVehicleDropdown();
       if (Date.now() - (STATE.lastFetched?.history || 0) > 3 * 60 * 1000) refreshAllData();
     }
     if (STATE.currentTab === 'tab-optimizer') {
       renderOptimizerView();
       if (Date.now() - (STATE.lastFetched?.analytics || 0) > 5 * 60 * 1000) refreshAllData();
+    }
+    if (STATE.currentTab === 'tab-fleet') {
+      renderFleetGrid();
     }
   }));
   tabs.forEach((button, index) => {
